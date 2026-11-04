@@ -57,8 +57,12 @@ LIGAS = {
 NOTICIAS = [
     ("MARCA", "https://e00-marca.uecdn.es/rss/futbol/primera-division.xml"),
     ("MARCA", "https://e00-marca.uecdn.es/rss/futbol/futbol-internacional.xml"),
+    ("AS", "https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/"),
     ("SPORT", "https://www.sport.es/es/rss/last-news/news.xml"),
+    # Titulares de medios argentinos (Olé, TyC, ESPN, etc.) a través de Google Noticias
+    ("", "https://news.google.com/rss/search?q=f%C3%BAtbol+argentino&hl=es-419&gl=AR&ceid=AR:es-419"),
 ]
+NAVEGADOR = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
 # ---------------------------------------------------------------------------
 # Pedidos a la API, con memoria y respetando el límite de 10 pedidos por minuto
@@ -270,7 +274,7 @@ def datos_noticias():
     lista, vistos = [], set()
     for fuente, url in NOTICIAS:
         try:
-            r = requests.get(url, timeout=10, headers={"User-Agent": "TikiData/2.0"})
+            r = requests.get(url, timeout=10, headers={"User-Agent": NAVEGADOR})
             raiz = ET.fromstring(r.content)
         except Exception:
             continue
@@ -284,12 +288,25 @@ def datos_noticias():
                 cuando = parsedate_to_datetime(item.findtext("pubDate")).astimezone(ARG)
             except Exception:
                 cuando = None
-            lista.append({"fuente": fuente, "titulo": titulo, "enlace": enlace,
+            origen = fuente or (item.findtext("source") or "NOTICIAS").strip().upper()
+            if not fuente and " - " in titulo:
+                titulo = titulo.rsplit(" - ", 1)[0]
+            lista.append({"fuente": origen, "titulo": titulo, "enlace": enlace,
                           "imagen": imagen_de(item),
                           "orden": cuando.timestamp() if cuando else 0,
                           "cuando": cuando.strftime("%d/%m %H:%M") if cuando else ""})
     lista.sort(key=lambda n: n["orden"], reverse=True)
-    _noticias.update(t=time.time(), lista=lista[:13])
+    # Mezclar portales: máximo 4 noticias de cada uno, y arriba una con foto
+    por_fuente, elegidas = {}, []
+    for n in lista:
+        if por_fuente.get(n["fuente"], 0) < 4:
+            por_fuente[n["fuente"]] = por_fuente.get(n["fuente"], 0) + 1
+            elegidas.append(n)
+    con_foto = [n for n in elegidas if n["imagen"]]
+    if con_foto:
+        elegidas.remove(con_foto[0])
+        elegidas.insert(0, con_foto[0])
+    _noticias.update(t=time.time(), lista=elegidas[:13])
     return {"noticias": _noticias["lista"]}
 
 
@@ -438,6 +455,12 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .club.on { border-color:var(--azul); }
 .club .nom { flex:1; }
 .nota-pie { font-size:12px; color:var(--suave); line-height:1.5; padding:0 6px; }
+.creditos { margin:10px 10px 0; padding:22px 12px 26px; border-top:1px solid var(--linea); display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
+.creditos img { width:48px; height:48px; border-radius:10px; object-fit:cover; opacity:.9; }
+.creditos .nombre { font-family:Montserrat, sans-serif; font-weight:900; font-size:15px; letter-spacing:.5px; color:#E6E9EE; }
+.creditos .nombre span { color:var(--azul); }
+.creditos p { margin:0; font-size:12px; color:var(--suave); line-height:1.6; }
+.creditos b { color:var(--plata); font-weight:700; }
 </style>
 </head>
 <body>
@@ -452,6 +475,12 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
     </a>
   </header>
   <div id="vista"><div class="cargando">Cargando…</div></div>
+  <footer class="creditos">
+    <img src="/logo.png" alt="" onerror="this.remove()">
+    <div class="nombre">TIKI<span>DATA</span></div>
+    <p>Desarrollado por <b>Teo Gunther Crespo</b></p>
+    <p>© 2026 Tiki Data · Datos de football-data.org</p>
+  </footer>
 </div>
 
 <nav class="abajo" aria-label="Secciones"><div id="navAbajo"></div></nav>
@@ -464,6 +493,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
       <button class="icono" id="cerrarMenu" aria-label="Cerrar menú"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
     </div>
     <div id="menuLigas"></div>
+    <p style="margin:24px 20px 0;font-size:11px;color:var(--suave);line-height:1.6">Desarrollado por <b style="color:var(--plata)">Teo Gunther Crespo</b><br>© 2026 Tiki Data</p>
   </aside>
   <button class="fondo" id="fondoMenu" aria-label="Cerrar menú"></button>
 </div>
@@ -605,7 +635,7 @@ async function cargarNoticias() {
     const d = await pedir('/api/noticias');
     if (!d.noticias.length) { el.innerHTML = ''; return; }
     const [a, ...resto] = d.noticias;
-    const img = (n) => n.imagen ? `<img src="${esc(n.imagen)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : '';
+    const img = (n) => n.imagen ? `<img src="${esc(n.imagen)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<img src="/logo.png" alt="" style="object-fit:contain;padding:14px;opacity:.5" onerror="this.remove()">`;
     el.innerHTML = `<section style="display:flex;flex-direction:column;gap:12px">
       <div class="seccion"><h2>Noticias</h2></div>
       <a class="hero" href="${esc(a.enlace)}" target="_blank" rel="noopener">${img(a)}
