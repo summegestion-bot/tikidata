@@ -323,21 +323,32 @@ _tsdb_turnos = deque()
 _tsdb_candado = threading.Lock()
 
 
+_tsdb_caido = {"hasta": 0}
+
+
 def tsdb(ruta, ttl=86400):
-    """Pide datos a TheSportsDB (gratis, 30 pedidos por minuto). Si falla, devuelve vacío."""
+    """Pide datos a TheSportsDB (gratis, 30 pedidos por minuto). Nunca hace esperar a la página:
+    si se pasó del límite o no responde, devuelve vacío y sigue."""
     clave = "tsdb" + ruta
     ahora = time.time()
     if clave in _memoria and ahora - _memoria[clave][0] < ttl:
         return _memoria[clave][1]
+    if ahora < _tsdb_caido["hasta"]:
+        return {}
     with _tsdb_candado:
         while _tsdb_turnos and ahora - _tsdb_turnos[0] > 60:
             _tsdb_turnos.popleft()
         if len(_tsdb_turnos) >= 25:
-            time.sleep(max(0, 61 - (ahora - _tsdb_turnos[0])))
-        _tsdb_turnos.append(time.time())
+            return {}
+        _tsdb_turnos.append(ahora)
     try:
-        r = requests.get(TSDB + ruta, timeout=12, headers={"User-Agent": NAVEGADOR})
+        r = requests.get(TSDB + ruta, timeout=6, headers={"User-Agent": NAVEGADOR})
         datos = r.json() if r.status_code == 200 else {}
+        if r.status_code == 429:
+            return {}
+    except (requests.exceptions.Timeout, requests.exceptions.ConnectionError):
+        _tsdb_caido["hasta"] = time.time() + 300  # no responde: dejamos de preguntar 5 minutos
+        return {}
     except Exception:
         datos = {}
     _memoria[clave] = (ahora, datos)
@@ -367,6 +378,7 @@ def buscar_equipo_tsdb(nombres):
 
 
 def datos_club(id_equipo):
+    """Datos básicos del club: salen rápido (football-data.org)."""
     t = api(f"/teams/{id_equipo}", ttl=86400)
     eq = equipo(t)
     club = {
@@ -375,45 +387,60 @@ def datos_club(id_equipo):
         "web": t.get("website") or "", "colores": t.get("clubColors") or "",
         "dt": (t.get("coach") or {}).get("name") or "",
         "plantel": [{"id": j.get("id"), "nombre": j.get("name", ""), "posicion": j.get("position") or "",
-                     "nacimiento": j.get("dateOfBirth") or "", "nacionalidad": j.get("nationality") or ""}
+                     "nacimiento": j.get("dateOfBirth") or "", "nacionalidad": j.get("nationality") or "", "foto": ""}
                     for j in (t.get("squad") or [])],
         "capacidad": None, "ubicacion": "", "fotoEstadio": "", "camisetas": [], "descripcion": "",
     }
-    extra = buscar_equipo_tsdb([t.get("shortName"), t.get("name")])
-    if extra:
-        club["capacidad"] = extra.get("intStadiumCapacity")
-        club["ubicacion"] = extra.get("strLocation") or ""
-        club["fundacion"] = club["fundacion"] or extra.get("intFormedYear")
-        club["estadio"] = club["estadio"] or extra.get("strStadium") or ""
-        club["descripcion"] = (extra.get("strDescriptionES") or extra.get("strDescriptionEN") or "")[:600]
-        if extra.get("idVenue"):
-            v = (primera_lista(tsdb(f"/lookupvenue.php?id={extra['idVenue']}")) or [{}])[0]
-            club["fotoEstadio"] = v.get("strThumb") or v.get("strFanart1") or ""
-            club["capacidad"] = club["capacidad"] or v.get("intCapacity")
-            club["ubicacion"] = club["ubicacion"] or v.get("strLocation") or ""
-        club["fotoEstadio"] = club["fotoEstadio"] or extra.get("strStadiumThumb") or extra.get("strFanart1") or ""
-        kits = primera_lista(tsdb(f"/lookupequipment.php?id={extra.get('idTeam')}")) if extra.get("idTeam") else []
-        kits = sorted(kits, key=lambda k: k.get("strSeason") or "", reverse=True)
-        tipos = {"1st": "Titular", "2nd": "Suplente", "3rd": "Alternativa"}
-        temporada = kits[0].get("strSeason") if kits else None
-        for k in kits:
-            if k.get("strSeason") == temporada and k.get("strEquipment") and len(club["camisetas"]) < 3:
-                club["camisetas"].append({"tipo": tipos.get(k.get("strType"), k.get("strType") or ""), "imagen": k["strEquipment"]})
-        if not club["camisetas"] and extra.get("strEquipment"):
-            club["camisetas"].append({"tipo": "Titular", "imagen": extra["strEquipment"]})
-        fotos = {}
-        for jp in (primera_lista(tsdb(f"/lookup_all_players.php?id={extra['idTeam']}")) if extra.get("idTeam") else []):
-            f = jp.get("strCutout") or jp.get("strThumb") or ""
-            if f and jp.get("strPlayer"):
-                fotos[normalizar(jp["strPlayer"])] = f
-        for j in club["plantel"]:
-            j["foto"] = fotos.get(normalizar(j["nombre"]), "")
     try:
         prox = api(f"/teams/{id_equipo}/matches?status=SCHEDULED,TIMED&limit=5", ttl=900)
         club["proximos"] = [partido(p) for p in prox.get("matches", [])][:5]
     except Exception:
         club["proximos"] = []
     return club
+
+
+def datos_club_extra(id_equipo):
+    """Lo que viene de TheSportsDB: estadio, foto, camisetas, historia y caras. Se carga después."""
+    from concurrent.futures import ThreadPoolExecutor
+    t = api(f"/teams/{id_equipo}", ttl=86400)
+    res = {"capacidad": None, "ubicacion": "", "fundacion": None, "estadio": "", "descripcion": "",
+           "fotoEstadio": "", "camisetas": [], "fotos": {}}
+    extra = buscar_equipo_tsdb([t.get("shortName"), t.get("name")])
+    if not extra:
+        return res
+    res.update(capacidad=extra.get("intStadiumCapacity"), ubicacion=extra.get("strLocation") or "",
+               fundacion=extra.get("intFormedYear"), estadio=extra.get("strStadium") or "",
+               descripcion=(extra.get("strDescriptionES") or extra.get("strDescriptionEN") or "")[:600],
+               fotoEstadio=extra.get("strStadiumThumb") or "")
+    id_t, id_v = extra.get("idTeam"), extra.get("idVenue")
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_venue = ex.submit(tsdb, f"/lookupvenue.php?id={id_v}") if id_v else None
+        f_kits = ex.submit(tsdb, f"/lookupequipment.php?id={id_t}") if id_t else None
+        f_jug = ex.submit(tsdb, f"/lookup_all_players.php?id={id_t}") if id_t else None
+        venue = (primera_lista(f_venue.result()) or [{}])[0] if f_venue else {}
+        kits = primera_lista(f_kits.result()) if f_kits else []
+        jugadores = primera_lista(f_jug.result()) if f_jug else []
+    res["fotoEstadio"] = venue.get("strThumb") or venue.get("strFanart1") or res["fotoEstadio"] or extra.get("strFanart1") or ""
+    res["capacidad"] = res["capacidad"] or venue.get("intCapacity")
+    res["ubicacion"] = res["ubicacion"] or venue.get("strLocation") or ""
+    kits = sorted(kits, key=lambda k: k.get("strSeason") or "", reverse=True)
+    tipos = {"1st": "Titular", "2nd": "Suplente", "3rd": "Alternativa"}
+    temporada = kits[0].get("strSeason") if kits else None
+    for k in kits:
+        if k.get("strSeason") == temporada and k.get("strEquipment") and len(res["camisetas"]) < 3:
+            res["camisetas"].append({"tipo": tipos.get(k.get("strType"), k.get("strType") or ""), "imagen": k["strEquipment"]})
+    if not res["camisetas"] and extra.get("strEquipment"):
+        res["camisetas"].append({"tipo": "Titular", "imagen": extra["strEquipment"]})
+    por_nombre = {}
+    for jp in jugadores:
+        f = jp.get("strCutout") or jp.get("strThumb") or ""
+        if f and jp.get("strPlayer"):
+            por_nombre[normalizar(jp["strPlayer"])] = f
+    for j in (t.get("squad") or []):
+        f = por_nombre.get(normalizar(j.get("name", "")))
+        if f:
+            res["fotos"][j.get("name", "")] = f
+    return res
 
 
 def foto_jugador(nombre):
@@ -1266,8 +1293,20 @@ document.addEventListener('click', (e) => {
 }, true);
 const GRUPO_POS = (p) => { p = (p || '').toLowerCase(); if (p.includes('goal')) return 'Arqueros'; if (p.includes('def') || p.includes('back')) return 'Defensores'; if (p.includes('mid')) return 'Mediocampistas'; if (p.includes('off') || p.includes('forw') || p.includes('wing') || p.includes('strik')) return 'Delanteros'; return 'Otros'; };
 async function vistaClub(id) {
-  $('vista').innerHTML = volver('Club') + '<div class="cargando">Cargando el club…</div>';
-  let c; try { c = await pedir('/api/club?id=' + id); } catch (e) { $('vista').innerHTML = volver('Club') + `<main>${error(e)}</main>`; return; }
+  $('vista').innerHTML = volver('Club') + '<div class="cargando" id="cargaClub">Cargando el club…</div>';
+  const aviso = setTimeout(() => { const el = $('cargaClub'); if (el) el.innerHTML = 'Cargando el club…<br><small>Está tardando un poco: la API gratis permite pocos pedidos por minuto. En unos segundos aparece.</small>'; }, 5000);
+  let c; try { c = await pedir('/api/club?id=' + id); } catch (e) { clearTimeout(aviso); $('vista').innerHTML = volver('Club') + `<main>${error(e)}</main>`; return; }
+  clearTimeout(aviso);
+  dibujarClub(c);
+  pedir('/api/club_extra?id=' + id).then(x => {
+    if (location.hash !== '#/club/' + id) return;
+    Object.entries(x.fotos || {}).forEach(([n, f]) => { FOTOS[n] = f; });
+    ['capacidad', 'ubicacion', 'fotoEstadio', 'camisetas', 'descripcion'].forEach(k => { if (x[k] && (!Array.isArray(x[k]) || x[k].length)) c[k] = x[k]; });
+    c.fundacion = c.fundacion || x.fundacion; c.estadio = c.estadio || x.estadio;
+    const y = window.scrollY; dibujarClub(c); window.scrollTo(0, y);
+  }).catch(() => {});
+}
+function dibujarClub(c) {
   const dato = (t, v) => v ? `<div><small>${t}</small><b>${esc(v)}</b></div>` : '';
   const grupos = {};
   c.plantel.forEach(j => (grupos[GRUPO_POS(j.posicion)] ||= []).push(j));
@@ -1298,12 +1337,35 @@ async function vistaClub(id) {
 }
 /* ---------- Caras de los jugadores ---------- */
 const FOTOS = {};
+// Versión chica de la foto (pesa mucho menos). Si no existe, usa la original.
+function fotoChica(f) { return /thesportsdb\.com/.test(f) && !/\/(tiny|small|preview)$/.test(f) ? f + '/small' : f; }
+function imgCara(f, cls) {
+  return `<img class="${cls} con-foto" src="${esc(fotoChica(f))}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="if(!this.dataset.o){this.dataset.o=1;this.src='${esc(f)}'}">`;
+}
 function caraHTML(j, cls = 'avatar') {
   const f = FOTOS[j.nombre] || j.foto;
-  return f ? `<img class="${cls} con-foto" src="${esc(f)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
-           : `<span class="${cls}" data-foto="${esc(j.nombre)}">${iniciales(j.nombre)}</span>`;
+  return f ? imgCara(f, cls) : `<span class="${cls}" data-foto="${esc(j.nombre)}">${iniciales(j.nombre)}</span>`;
+}
+const vigia = 'IntersectionObserver' in window ? new IntersectionObserver((entradas) => {
+  entradas.forEach(e => { if (e.isIntersecting) { vigia.unobserve(e.target); buscarCara(e.target.dataset.foto); } });
+}, { rootMargin: '300px' }) : null;
+const colaCaras = []; let buscando = 0;
+function buscarCara(n) {
+  if (!n || n in FOTOS || colaCaras.includes(n)) return;
+  colaCaras.push(n); siguienteCara();
+}
+async function siguienteCara() {
+  while (buscando < 3 && colaCaras.length) {
+    const n = colaCaras.shift(); buscando++;
+    pedir('/api/foto?nombre=' + encodeURIComponent(n)).then(r => { FOTOS[n] = r.foto || ''; }).catch(() => { FOTOS[n] = ''; }).finally(() => {
+      buscando--;
+      if (FOTOS[n]) document.querySelectorAll('[data-foto]').forEach(el => { if (el.dataset.foto === n) el.outerHTML = imgCara(FOTOS[n], el.className); });
+      siguienteCara();
+    });
+  }
 }
 async function cargarFotos(raiz, alTerminar) {
+  if (vigia) { raiz.querySelectorAll('[data-foto]').forEach(el => vigia.observe(el)); return; }
   const pendientes = [...new Set([...raiz.querySelectorAll('[data-foto]')].map(e => e.dataset.foto))].filter(n => !(n in FOTOS));
   let i = 0, cambios = 0;
   const trabajador = async () => {
@@ -1312,7 +1374,7 @@ async function cargarFotos(raiz, alTerminar) {
       try { const r = await pedir('/api/foto?nombre=' + encodeURIComponent(n)); FOTOS[n] = r.foto || ''; } catch (e) { FOTOS[n] = ''; }
       if (FOTOS[n]) {
         cambios++;
-        raiz.querySelectorAll('[data-foto]').forEach(el => { if (el.dataset.foto === n) el.outerHTML = `<img class="${el.className} con-foto" src="${esc(FOTOS[n])}" alt="" referrerpolicy="no-referrer">`; });
+        raiz.querySelectorAll('[data-foto]').forEach(el => { if (el.dataset.foto === n) el.outerHTML = imgCara(FOTOS[n], el.className); });
       }
     }
   };
@@ -1325,7 +1387,7 @@ async function bloqueJugadorExtra(nombre, destino) {
   try {
     const x = await pedir('/api/jugador_extra?nombre=' + encodeURIComponent(nombre));
     if (!x.encontrado) { el.innerHTML = '<p class="nota-pie">No encontramos más información de este jugador.</p>'; return; }
-    if (x.foto) { const av = document.querySelector('.avatar.xl'); if (av) av.outerHTML = `<img class="foto-jug" src="${esc(x.foto)}" alt="Foto de ${esc(x.nombre)}">`; }
+    if (x.foto) { const av = document.querySelector('.avatar.xl'); if (av) av.outerHTML = `<img class="foto-jug" src="${esc(/thesportsdb\.com/.test(x.foto) ? x.foto + '/medium' : x.foto)}" alt="Foto de ${esc(x.nombre)}" referrerpolicy="no-referrer" onerror="if(!this.dataset.o){this.dataset.o=1;this.src='${esc(x.foto)}'}">`; }
     const fila = (t, v) => v ? `<div><small>${t}</small><b>${esc(v)}</b></div>` : '';
     el.innerHTML = `<section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">Más datos</h2><div class="datos3">
         ${fila('Altura', x.altura)}${fila('Número', x.numero)}${fila('Posición', x.posicion)}${fila('Club actual', x.equipo)}</div></section>
@@ -1426,6 +1488,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_equipos(liga))
         elif url.path == "/api/resumen" and q.get("id", "").isdigit():
             self.json(lambda: datos_resumen(q["id"]))
+        elif url.path == "/api/club_extra" and q.get("id", "").isdigit():
+            self.json(lambda: datos_club_extra(q["id"]))
         elif url.path == "/api/club" and q.get("id", "").isdigit():
             self.json(lambda: datos_club(q["id"]))
         elif url.path == "/api/foto" and 0 < len(q.get("nombre", "")) <= 80:
