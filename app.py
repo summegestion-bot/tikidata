@@ -398,6 +398,9 @@ def _lista(d):
 def hl_liga(cod):
     """(id, temporada) de cada torneo. Se busca una vez por mes, o se fija con HL_IDS."""
     fijos = dict(x.split("=", 1) for x in os.environ.get("HL_IDS", "").replace(" ", "").split(",") if "=" in x)
+    if fijos.get(cod, "").isdigit():
+        # número fijado en Render: no gasta pedidos. La temporada es el año actual.
+        return int(fijos[cod]), datetime.now(ARG).year
     vistos = []
     for busqueda in HL_BUSQUEDA[cod]:
         offset = 0
