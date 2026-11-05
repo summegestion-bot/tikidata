@@ -53,14 +53,26 @@ LIGAS = {
 }
 
 # Noticias: portales que publican sus titulares en formato RSS.
-# Si alguno deja de funcionar, se saltea solo. Se pueden agregar más.
+# Si alguno no responde, se saltea solo. Se pueden agregar o sacar.
 NOTICIAS = [
     ("MARCA", "https://e00-marca.uecdn.es/rss/futbol/primera-division.xml"),
     ("MARCA", "https://e00-marca.uecdn.es/rss/futbol/futbol-internacional.xml"),
     ("AS", "https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/"),
     ("SPORT", "https://www.sport.es/es/rss/last-news/news.xml"),
-    # Titulares de medios argentinos (Olé, TyC, ESPN, etc.) a través de Google Noticias
-    ("", "https://news.google.com/rss/search?q=f%C3%BAtbol+argentino&hl=es-419&gl=AR&ceid=AR:es-419"),
+    ("INFOBAE", "https://www.infobae.com/arc/outboundfeeds/rss/category/deportes/"),
+    ("LA NACIÓN", "https://www.lanacion.com.ar/arc/outboundfeeds/rss/category/deportes/"),
+    ("CLARÍN", "https://www.clarin.com/rss/deportes/"),
+    ("OLÉ", "https://www.ole.com.ar/rss/ultimas-noticias/"),
+]
+# Búsquedas en Google Noticias (Argentina) para asegurar cada tema.
+# Traen titulares de Olé, TyC, ESPN, etc. (sin foto).
+BUSQUEDAS = [
+    '"Liga Profesional" OR Boca OR River OR Racing OR Independiente OR "San Lorenzo"',
+    '"Primera Nacional" OR "ascenso" fútbol',
+    '"Selección Argentina" OR Scaloni',
+    'Messi OR "Cristiano Ronaldo" OR Mbappé OR Haaland OR "Lamine Yamal"',
+    '"Real Madrid" OR Barcelona OR "Premier League" OR clásico fútbol',
+    'fichaje OR "mercado de pases" fútbol',
 ]
 NAVEGADOR = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
@@ -249,7 +261,52 @@ def datos_proximos(id_equipo):
     return {"partidos": [partido(p) for p in datos.get("matches", [])]}
 
 
+# ---------------------------------------------------------------------------
+# Noticias: traer, clasificar por tema, medir importancia y armar la mezcla
+# ---------------------------------------------------------------------------
+TEMAS = {
+    "arg": ("Fútbol argentino", ["liga profesional", "lpf", "boca", "river", "racing", "independiente", "san lorenzo",
+             "estudiantes", "velez", "talleres", "lanus", "huracan", "newells", "newell s", "rosario central", "belgrano",
+             "argentinos juniors", "gimnasia", "banfield", "tigre", "platense", "instituto", "godoy cruz",
+             "defensa y justicia", "barracas central", "sarmiento", "atletico tucuman", "central cordoba",
+             "independiente rivadavia", "riestra", "aldosivi", "san martin de san juan", "afa", "copa argentina",
+             "torneo clausura", "torneo apertura", "superclasico", "libertadores", "sudamericana", "chiqui tapia"]),
+    "asc": ("Ascenso", ["primera nacional", "ascenso", "primera b", "federal a", "chacarita", "atlanta", "all boys",
+             "quilmes", "ferro carril oeste", "nueva chicago", "almirante brown", "deportivo moron", "temperley",
+             "colon de santa fe", "chaco for ever", "estudiantes de caseros", "los andes", "brown de adrogue",
+             "tristan suarez", "agropecuario", "guillermo brown", "gimnasia de jujuy", "atletico rafaela", "san telmo"]),
+    "sel": ("Selección Argentina", ["seleccion argentina", "scaloni", "albiceleste", "scaloneta", "eliminatorias"]),
+    "top": ("Clubes grandes y clásicos", ["real madrid", "barcelona", "barca", "atletico de madrid", "manchester city",
+             "manchester united", "liverpool", "arsenal", "chelsea", "tottenham", "bayern", "psg", "paris saint germain",
+             "juventus", "inter de milan", "milan", "napoli", "dortmund", "clasico", "derbi", "champions league", "champions"]),
+    "pl": ("Premier League", ["premier league", "premier"]),
+    "liga": ("La Liga", ["laliga", "la liga", "liga espanola"]),
+    "fich": ("Fichajes", ["fichaje", "fichajes", "ficha por", "mercado de pases", "transferencia", "refuerzo", "traspaso",
+             "clausula", "renovacion", "renueva", "firmo", "nuevo club"]),
+    "est": ("Estrellas", ["messi", "cristiano", "ronaldo", "mbappe", "haaland", "lamine yamal", "yamal", "vinicius",
+             "bellingham", "julian alvarez", "enzo fernandez", "dibu martinez", "lautaro", "mac allister", "neymar",
+             "salah", "kane", "pedri", "rodri", "de bruyne", "modric", "lewandowski", "balon de oro"]),
+}
+IMPORTANTE = ["fallecio", "murio", "muerte", "tragedia", "conmocion", "luto", "grave", "terapia intensiva",
+              "internado", "duelo", "sancion", "suspendido", "renuncio", "despedido"]
+POCO_INTERES = ["como ver", "donde ver", "a que hora", "por tv", "horario y tv", "en vivo y en directo", "pronostico",
+                "apuesta", "apuestas", "cuotas", "horoscopo", "quiniela", "sorteo", "minuto a minuto"]
+# Mezcla recomendada si la persona no eligió nada (suma 100)
+MEZCLA = [("arg asc sel", 40), ("top pl liga imp", 30), ("est", 20), ("fich otros", 10)]
+CANTIDAD = 20
+
 _noticias = {"t": 0, "lista": []}
+
+
+def normalizar(texto):
+    import unicodedata
+    t = unicodedata.normalize("NFD", (texto or "").lower())
+    t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+    return " " + re.sub(r"[^a-z0-9]+", " ", t).strip() + " "
+
+
+def tiene(texto_norm, palabras):
+    return any(" " + p + " " in texto_norm for p in palabras)
 
 
 def imagen_de(item):
@@ -257,9 +314,8 @@ def imagen_de(item):
         etiqueta = hijo.tag.lower()
         if (etiqueta.endswith("}content") or etiqueta.endswith("}thumbnail")) and hijo.get("url"):
             return hijo.get("url")
-        if etiqueta == "enclosure" and "image" in (hijo.get("type") or "image"):
-            if hijo.get("url"):
-                return hijo.get("url")
+        if etiqueta == "enclosure" and "image" in (hijo.get("type") or "image") and hijo.get("url"):
+            return hijo.get("url")
         for nieto in hijo:
             if nieto.tag.lower().endswith("}content") and nieto.get("url"):
                 return nieto.get("url")
@@ -268,46 +324,124 @@ def imagen_de(item):
     return m.group(1) if m else ""
 
 
-def datos_noticias():
-    if time.time() - _noticias["t"] < 900 and _noticias["lista"]:
-        return {"noticias": _noticias["lista"]}
-    lista, vistos = [], set()
-    for fuente, url in NOTICIAS:
-        try:
-            r = requests.get(url, timeout=10, headers={"User-Agent": NAVEGADOR})
-            raiz = ET.fromstring(r.content)
-        except Exception:
+def leer_feed(fuente, url):
+    try:
+        r = requests.get(url, timeout=10, headers={"User-Agent": NAVEGADOR})
+        raiz = ET.fromstring(r.content)
+    except Exception:
+        return []
+    salida = []
+    for item in raiz.iter("item"):
+        titulo = (item.findtext("title") or "").strip()
+        enlace = (item.findtext("link") or "").strip()
+        if not titulo or not enlace:
             continue
-        for item in raiz.iter("item"):
-            titulo = (item.findtext("title") or "").strip()
-            enlace = (item.findtext("link") or "").strip()
-            if not titulo or not enlace or enlace in vistos:
+        origen = fuente or (item.findtext("source") or "NOTICIAS").strip().upper()
+        if not fuente and " - " in titulo:
+            titulo = titulo.rsplit(" - ", 1)[0]
+        try:
+            cuando = parsedate_to_datetime(item.findtext("pubDate")).astimezone(ARG)
+        except Exception:
+            cuando = None
+        resumen = re.sub(r"<[^>]+>", " ", item.findtext("description") or "")
+        salida.append({"fuente": origen, "titulo": titulo, "enlace": enlace, "imagen": imagen_de(item),
+                       "orden": cuando.timestamp() if cuando else 0,
+                       "cuando": cuando.strftime("%d/%m %H:%M") if cuando else "",
+                       "_texto": normalizar(titulo + " " + resumen[:300]), "_tit": normalizar(titulo)})
+    return salida
+
+
+def traer_todas():
+    if time.time() - _noticias["t"] < 900 and _noticias["lista"]:
+        return _noticias["lista"]
+    from concurrent.futures import ThreadPoolExecutor
+    from urllib.parse import quote
+    pedidos = list(NOTICIAS) + [("", "https://news.google.com/rss/search?q=" + quote(q + " when:2d") +
+                                 "&hl=es-419&gl=AR&ceid=AR:es-419") for q in BUSQUEDAS]
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        resultados = list(ex.map(lambda p: leer_feed(*p), pedidos))
+    lista, vistos = [], set()
+    for r in resultados:
+        for n in r:
+            if n["enlace"] in vistos or tiene(n["_tit"], POCO_INTERES):
                 continue
-            vistos.add(enlace)
-            try:
-                cuando = parsedate_to_datetime(item.findtext("pubDate")).astimezone(ARG)
-            except Exception:
-                cuando = None
-            origen = fuente or (item.findtext("source") or "NOTICIAS").strip().upper()
-            if not fuente and " - " in titulo:
-                titulo = titulo.rsplit(" - ", 1)[0]
-            lista.append({"fuente": origen, "titulo": titulo, "enlace": enlace,
-                          "imagen": imagen_de(item),
-                          "orden": cuando.timestamp() if cuando else 0,
-                          "cuando": cuando.strftime("%d/%m %H:%M") if cuando else ""})
-    lista.sort(key=lambda n: n["orden"], reverse=True)
-    # Mezclar portales: máximo 4 noticias de cada uno, y arriba una con foto
-    por_fuente, elegidas = {}, []
+            vistos.add(n["enlace"])
+            lista.append(n)
+    ahora = time.time()
+    lista = [n for n in lista if not n["orden"] or ahora - n["orden"] < 4 * 86400]
+    # Temas de cada noticia
     for n in lista:
-        if por_fuente.get(n["fuente"], 0) < 4:
-            por_fuente[n["fuente"]] = por_fuente.get(n["fuente"], 0) + 1
-            elegidas.append(n)
-    con_foto = [n for n in elegidas if n["imagen"]]
-    if con_foto:
-        elegidas.remove(con_foto[0])
-        elegidas.insert(0, con_foto[0])
-    _noticias.update(t=time.time(), lista=elegidas[:13])
-    return {"noticias": _noticias["lista"]}
+        n["temas"] = [k for k, (_, pal) in TEMAS.items() if tiene(n["_texto"], pal)]
+        n["imp"] = tiene(n["_tit"], IMPORTANTE)
+    # Agrupar la misma historia contada por distintos portales
+    def palabras(n):
+        return {w for w in n["_tit"].split() if len(w) > 3}
+    lista.sort(key=lambda n: (bool(n["imagen"]), n["orden"]), reverse=True)
+    grupos = []
+    for n in lista:
+        pn = palabras(n)
+        for g in grupos:
+            pg = g["_pal"]
+            if pn and pg and len(pn & pg) / len(pn | pg) >= 0.34:
+                g["_fuentes"].add(n["fuente"])
+                g["temas"] = sorted(set(g["temas"]) | set(n["temas"]))
+                g["imp"] = g["imp"] or n["imp"]
+                break
+        else:
+            n["_pal"], n["_fuentes"] = pn, {n["fuente"]}
+            grupos.append(n)
+    for g in grupos:
+        horas = (ahora - g["orden"]) / 3600 if g["orden"] else 48
+        g["puntaje"] = (max(0.0, 48 - horas) / 48) + 1.2 * (len(g["_fuentes"]) - 1) + (1.5 if g["imp"] else 0) + (0.3 if g["imagen"] else 0)
+    _noticias.update(t=time.time(), lista=grupos)
+    return grupos
+
+
+def datos_noticias(prefs=""):
+    grupos = traer_todas()
+    elegidos_temas = [p for p in prefs.split(",") if p in TEMAS]
+    if elegidos_temas:
+        parte = 85 // len(elegidos_temas)
+        mezcla = [(t, parte) for t in elegidos_temas] + [("imp", 15)]
+    else:
+        mezcla = MEZCLA
+    ordenadas = sorted(grupos, key=lambda g: g["puntaje"], reverse=True)
+
+    def pertenece(g, cubo):
+        claves = cubo.split()
+        if "imp" in claves and g["imp"]:
+            return True
+        if "otros" in claves and not g["temas"]:
+            return True
+        return any(t in claves for t in g["temas"])
+
+    elegidas, usadas = [], set()
+    for cubo, porcentaje in mezcla:
+        cupo = round(CANTIDAD * porcentaje / 100)
+        for g in ordenadas:
+            if cupo <= 0:
+                break
+            if id(g) not in usadas and pertenece(g, cubo):
+                elegidas.append(g)
+                usadas.add(id(g))
+                cupo -= 1
+    for g in ordenadas:
+        if len(elegidas) >= CANTIDAD:
+            break
+        if id(g) not in usadas and (not elegidos_temas or any(t in elegidos_temas for t in g["temas"]) or g["imp"]):
+            elegidas.append(g)
+            usadas.add(id(g))
+    elegidas.sort(key=lambda g: g["puntaje"], reverse=True)
+    # Las 4 destacadas: las más importantes, mejor si tienen foto
+    destacadas = sorted(elegidas[:8], key=lambda g: g["puntaje"] + (0.8 if g["imagen"] else 0), reverse=True)[:4]
+    resto = [g for g in elegidas if g not in destacadas]
+
+    def limpio(g):
+        tema = next((TEMAS[t][0] for t in g["temas"]), "")
+        return {"fuente": g["fuente"], "titulo": g["titulo"], "enlace": g["enlace"], "imagen": g["imagen"],
+                "cuando": g["cuando"], "tema": tema, "importante": g["imp"]}
+    return {"destacadas": [limpio(g) for g in destacadas], "noticias": [limpio(g) for g in resto],
+            "temas": [[k, v[0]] for k, v in TEMAS.items()]}
 
 
 # ---------------------------------------------------------------------------
@@ -455,6 +589,16 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .club.on { border-color:var(--azul); }
 .club .nom { flex:1; }
 .nota-pie { font-size:12px; color:var(--suave); line-height:1.5; padding:0 6px; }
+.carrusel { display:flex; gap:10px; overflow-x:auto; scroll-snap-type:x mandatory; scrollbar-width:none; border-radius:16px; }
+.carrusel::-webkit-scrollbar { display:none; }
+.carrusel .hero { flex:0 0 100%; scroll-snap-align:center; }
+.puntos { display:flex; justify-content:center; gap:2px; margin-top:-4px; }
+.puntos button { width:24px; height:24px; border:0; background:none; padding:0; display:flex; align-items:center; justify-content:center; }
+.puntos i { display:block; width:8px; height:8px; border-radius:4px; background:#2C4470; transition:width .2s, background .2s; }
+.puntos .on i { width:20px; background:var(--azul); }
+.tema { display:inline-block; font-size:10px; font-weight:800; letter-spacing:.4px; text-transform:uppercase; color:#8DB8FF; }
+.hero .tema { padding:3px 8px; border-radius:5px; background:rgba(5,7,13,.75); margin-left:4px; }
+.tema.imp { color:#FF8A90; }
 .creditos { margin:10px 10px 0; padding:22px 12px 26px; border-top:1px solid var(--linea); display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
 .creditos img { width:48px; height:48px; border-radius:10px; object-fit:cover; opacity:.9; }
 .creditos .nombre { font-family:Montserrat, sans-serif; font-weight:900; font-size:15px; letter-spacing:.5px; color:#E6E9EE; }
@@ -629,20 +773,48 @@ async function cargarProximosFavs(favs) {
     return `<div style="padding:8px 12px 0;font-size:11px;font-weight:700;color:var(--suave)">${DIAS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1} · ${esc(p.ligaNombre)}</div>` + filaPartido(p);
   }).join('') : '<div class="aviso" style="padding:14px">No encontramos próximos partidos.</div>';
 }
+const TEMAS_TXT = { arg:'Fútbol argentino', asc:'Ascenso', sel:'Selección Argentina', top:'Clubes grandes y clásicos', pl:'Premier League', liga:'La Liga', fich:'Fichajes', est:'Estrellas (Messi, Cristiano y la élite)' };
 async function cargarNoticias() {
   const el = $('noticias'); if (!el) return;
+  const prefs = leer('tiki_prefs_noticias', []);
   try {
-    const d = await pedir('/api/noticias');
-    if (!d.noticias.length) { el.innerHTML = ''; return; }
-    const [a, ...resto] = d.noticias;
-    const img = (n) => n.imagen ? `<img src="${esc(n.imagen)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<img src="/logo.png" alt="" style="object-fit:contain;padding:14px;opacity:.5" onerror="this.remove()">`;
+    const d = await pedir('/api/noticias?prefs=' + encodeURIComponent(prefs.join(',')));
+    const todas = d.destacadas.length + d.noticias.length;
+    const img = (n) => n.imagen ? `<img src="${esc(n.imagen)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<img src="/logo.png" alt="" style="object-fit:contain;padding:30px;opacity:.35" onerror="this.remove()">`;
+    const etiqueta = (n) => n.importante ? '<span class="tema imp">IMPORTANTE</span>' : (n.tema ? `<span class="tema">${esc(n.tema)}</span>` : '');
     el.innerHTML = `<section style="display:flex;flex-direction:column;gap:12px">
-      <div class="seccion"><h2>Noticias</h2></div>
-      <a class="hero" href="${esc(a.enlace)}" target="_blank" rel="noopener">${img(a)}
-        <div class="capa"><span class="fuente">${esc(a.fuente)}</span><div class="tit">${esc(a.titulo)}</div><small>${esc(a.cuando)} · Leer en ${esc(a.fuente)}</small></div></a>
-      <div class="grilla">${resto.slice(0, 8).map(n => `<a class="nota" href="${esc(n.enlace)}" target="_blank" rel="noopener">
+      <div class="seccion"><h2>Noticias</h2><button class="link" id="btnPers">${prefs.length ? 'Mis temas (' + prefs.length + ')' : 'Personalizar'}</button></div>
+      <div id="panelPers" class="tarjeta pad" hidden>
+        <b style="font-size:14px">¿Qué noticias querés ver?</b>
+        <p class="nota-pie" style="margin:6px 0 12px;padding:0">Elegí uno o varios temas. Las noticias más importantes aparecen siempre.</p>
+        <div class="chips">${Object.entries(TEMAS_TXT).map(([k, t]) => `<button class="chip ${prefs.includes(k) ? 'on' : ''}" data-tema="${k}" aria-pressed="${prefs.includes(k)}">${esc(t)}</button>`).join('')}</div>
+        <div style="display:flex;gap:8px;margin-top:14px"><button class="boton" id="guardarPers" style="flex:1">Guardar</button><button class="boton sec" id="borrarPers">Lo recomendado</button></div>
+      </div>
+      ${todas ? '' : '<div class="tarjeta aviso">No encontramos noticias de esos temas ahora. Probá con otros.</div>'}
+      ${d.destacadas.length ? `<div class="carrusel" id="carrusel">${d.destacadas.map(n => `<a class="hero" href="${esc(n.enlace)}" target="_blank" rel="noopener">${img(n)}
+        <div class="capa"><span class="fuente">${esc(n.fuente)}</span> ${etiqueta(n)}<div class="tit">${esc(n.titulo)}</div><small>${esc(n.cuando)} · Leer en ${esc(n.fuente)}</small></div></a>`).join('')}</div>
+      ${d.destacadas.length > 1 ? `<div class="puntos" role="tablist" aria-label="Noticias destacadas">${d.destacadas.map((_, i) => `<button role="tab" aria-label="Noticia ${i + 1}" data-i="${i}" class="${i === 0 ? 'on' : ''}"><i></i></button>`).join('')}</div>` : ''}` : ''}
+      <div class="grilla">${d.noticias.slice(0, 16).map(n => `<a class="nota" href="${esc(n.enlace)}" target="_blank" rel="noopener">
         <div class="img">${img(n)}<span class="fuente">${esc(n.fuente)}</span></div>
-        <div class="txt">${esc(n.titulo)}<small>${esc(n.cuando)}</small></div></a>`).join('')}</div></section>`;
+        <div class="txt">${n.importante || n.tema ? `<span class="tema ${n.importante ? 'imp' : ''}">${esc(n.importante ? 'IMPORTANTE' : n.tema)}</span>` : ''}${esc(n.titulo)}<small>${esc(n.cuando)}</small></div></a>`).join('')}</div></section>`;
+    const car = $('carrusel');
+    if (car) {
+      const puntos = [...el.querySelectorAll('.puntos button')];
+      const paso = () => car.clientWidth + 10;
+      car.addEventListener('scroll', () => {
+        const i = Math.round(car.scrollLeft / paso());
+        puntos.forEach((b, j) => { b.classList.toggle('on', i === j); b.setAttribute('aria-selected', i === j); });
+      }, { passive: true });
+      puntos.forEach(b => b.onclick = () => car.scrollTo({ left: +b.dataset.i * paso(), behavior: 'smooth' }));
+    }
+    const elegidos = new Set(prefs);
+    $('btnPers').onclick = () => { $('panelPers').hidden = !$('panelPers').hidden; };
+    el.querySelectorAll('[data-tema]').forEach(b => b.onclick = () => {
+      const k = b.dataset.tema; elegidos.has(k) ? elegidos.delete(k) : elegidos.add(k);
+      b.classList.toggle('on', elegidos.has(k)); b.setAttribute('aria-pressed', elegidos.has(k));
+    });
+    $('guardarPers').onclick = () => { guardar('tiki_prefs_noticias', [...elegidos]); cargarNoticias(); };
+    $('borrarPers').onclick = () => { guardar('tiki_prefs_noticias', []); cargarNoticias(); };
   } catch (e) { el.innerHTML = ''; }
 }
 
@@ -942,7 +1114,8 @@ class Manejador(BaseHTTPRequestHandler):
         elif url.path == "/api/proximos" and q.get("equipo", "").isdigit():
             self.json(lambda: datos_proximos(q["equipo"]))
         elif url.path == "/api/noticias":
-            self.json(datos_noticias)
+            prefs = re.sub(r"[^a-z,]", "", q.get("prefs", ""))[:60]
+            self.json(lambda: datos_noticias(prefs))
         else:
             self.responder(404, "text/plain; charset=utf-8", "No encontrado")
 
