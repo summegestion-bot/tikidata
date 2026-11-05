@@ -313,8 +313,15 @@ HL_LIGAS = {
     "LIB": ("Copa Libertadores", "Sudamérica"),
     "SUD": ("Copa Sudamericana", "Sudamérica"),
 }
-HL_BUSQUEDA = {"LPF": {"countryCode": "AR"}, "CAR": {"countryCode": "AR"},
-               "LIB": {"leagueName": "Libertadores"}, "SUD": {"leagueName": "Sudamericana"}}
+# Formas de buscar cada torneo (se prueban en orden hasta encontrarlo; cada búsqueda se guarda 30 días)
+HL_BUSQUEDA = {
+    "LPF": [{"countryCode": "AR"}, {"countryName": "Argentina"}],
+    "CAR": [{"countryCode": "AR"}, {"countryName": "Argentina"}],
+    "LIB": [{"leagueName": "CONMEBOL Libertadores"}, {"leagueName": "Copa Libertadores"}, {"leagueName": "Libertadores"},
+            {"countryName": "South America"}, {"countryName": "World"}],
+    "SUD": [{"leagueName": "CONMEBOL Sudamericana"}, {"leagueName": "Copa Sudamericana"}, {"leagueName": "Sudamericana"},
+            {"countryName": "South America"}, {"countryName": "World"}],
+}
 _EXCLUIR = (" reserva", " reserve", " femen", " women", " sub ", " u20", " u17", " u23", " youth", " juvenil", " futsal")
 
 
@@ -323,8 +330,8 @@ def _elige(cod, nombre_norm):
         return False
     return {"LPF": " liga profesional " in nombre_norm or nombre_norm.strip() == "primera division",
             "CAR": " copa argentina " in nombre_norm,
-            "LIB": " libertadores " in nombre_norm,
-            "SUD": " sudamericana " in nombre_norm}[cod]
+            "LIB": " libertadores " in nombre_norm or " libertadores" in nombre_norm,
+            "SUD": " sudamericana " in nombre_norm or " sul americana " in nombre_norm or " sudamericana" in nombre_norm}[cod]
 
 
 VIVO_HL = {"First half", "Second half", "Extra time", "Penalties", "In progress", "Half time", "Break time"}
@@ -391,21 +398,27 @@ def _lista(d):
 def hl_liga(cod):
     """(id, temporada) de cada torneo. Se busca una vez por mes, o se fija con HL_IDS."""
     fijos = dict(x.split("=", 1) for x in os.environ.get("HL_IDS", "").replace(" ", "").split(",") if "=" in x)
-    datos = hl("/leagues", HL_BUSQUEDA[cod], ttl=30 * 86400)
-    elegida = None
-    for lg in _lista(datos):
-        if fijos.get(cod) and str(lg.get("id")) == fijos[cod]:
-            elegida = lg
-            break
-        if not fijos.get(cod) and _elige(cod, normalizar(lg.get("name"))):
-            elegida = lg
-            break
-    if not elegida:
-        if fijos.get(cod):
-            return int(fijos[cod]), datetime.now(ARG).year
-        raise RuntimeError(f"No encontramos {HL_LIGAS[cod][0]} en Highlightly.")
-    temporadas = [s.get("season") for s in (elegida.get("seasons") or []) if isinstance(s, dict) and s.get("season")]
-    return elegida.get("id"), (max(temporadas) if temporadas else datetime.now(ARG).year)
+    vistos = []
+    for busqueda in HL_BUSQUEDA[cod]:
+        offset = 0
+        for _ in range(5):
+            params = dict(busqueda, limit=100, offset=offset)
+            datos = hl("/leagues", params, ttl=30 * 86400)
+            ligas = _lista(datos)
+            for lg in ligas:
+                vistos.append(lg.get("name") or "")
+                elegida = (str(lg.get("id")) == fijos[cod]) if fijos.get(cod) else _elige(cod, normalizar(lg.get("name")))
+                if elegida:
+                    temporadas = [x.get("season") for x in (lg.get("seasons") or []) if isinstance(x, dict) and x.get("season")]
+                    return lg.get("id"), (max(temporadas) if temporadas else datetime.now(ARG).year)
+            total = ((datos or {}).get("pagination") or {}).get("totalCount") if isinstance(datos, dict) else None
+            offset += 100
+            if len(ligas) < 100 or (total is not None and offset >= total):
+                break
+    if fijos.get(cod):
+        return int(fijos[cod]), datetime.now(ARG).year
+    _hl.setdefault("candidatos", {})[cod] = sorted(set(vistos))[:40]
+    raise RuntimeError(f"No encontramos {HL_LIGAS[cod][0]} en Highlightly.")
 
 
 def _equipo_hl(t):
@@ -723,7 +736,17 @@ def hl_estado():
             "ultimoError": _hl["error"],
             "intervalosMinutos": intervalos(), "minutosDePartidoQueFaltanHoy": {k: round(v) for k, v in _minutos_en_vivo_restantes().items()},
             "equiposPrioridad": ids_prioridad(),
-            "ligas": {c: (lambda: (lambda r: {"id": r[0], "temporada": r[1]})(hl_liga(c)) if HL_KEY else None)() for c in HL_LIGAS}}
+            "ligas": {c: _estado_liga(c) for c in HL_LIGAS}, "nombresEncontrados": _hl.get("candidatos", {})}
+
+
+def _estado_liga(c):
+    if not HL_KEY:
+        return None
+    try:
+        i, t = hl_liga(c)
+        return {"id": i, "temporada": t}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ---------------------------------------------------------------------------
