@@ -262,6 +262,60 @@ def datos_proximos(id_equipo):
 
 
 # ---------------------------------------------------------------------------
+# Resumen en YouTube: busca el video del partido con la API oficial de YouTube
+# (gratis: 100 búsquedas por día). La clave va en la variable YOUTUBE_API_KEY.
+# ---------------------------------------------------------------------------
+YOUTUBE_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
+CANALES_CONFIABLES = ["espn", "laliga", "premier league", "dazn", "tnt sports", "fox sports", "cbs sports", "bein",
+                      "uefa", "serie a", "bundesliga", "ligue 1", "movistar", "tyc sports", "nbc sports", "sky sports",
+                      "telemundo", "univision", "disney", "star+", "conmebol", "afa", "real madrid", "fc barcelona"]
+_videos = {}
+
+
+def datos_resumen(id_partido):
+    p = partido(api(f"/matches/{id_partido}", ttl=300))
+    busqueda = f'{p["local"]["nombre"]} vs {p["visitante"]["nombre"]} resumen'
+    respuesta = {"video": None, "busqueda": "https://www.youtube.com/results?search_query=" + requests.utils.quote(busqueda + " " + p["fecha"][:4])}
+    if not YOUTUBE_KEY or not p["terminado"]:
+        respuesta["motivo"] = "sin_clave" if not YOUTUBE_KEY else "no_termino"
+        return respuesta
+    if id_partido in _videos:
+        respuesta["video"] = _videos[id_partido]
+        return respuesta
+    desde = (date.fromisoformat(p["fecha"]) - timedelta(days=1)).isoformat() + "T00:00:00Z"
+    try:
+        r = requests.get("https://www.googleapis.com/youtube/v3/search", timeout=12, params={
+            "part": "snippet", "q": busqueda, "type": "video", "maxResults": 8, "order": "relevance",
+            "publishedAfter": desde, "relevanceLanguage": "es", "videoEmbeddable": "true", "key": YOUTUBE_KEY})
+        items = r.json().get("items", []) if r.status_code == 200 else []
+    except Exception:
+        items = []
+    nl, nv = normalizar(p["local"]["nombre"]), normalizar(p["visitante"]["nombre"])
+
+    def puntaje(it):
+        s = it.get("snippet", {})
+        tit, canal = normalizar(s.get("title")), normalizar(s.get("channelTitle"))
+        pts = 0
+        pts += 2 if any(w in tit for w in nl.split() if len(w) > 3) else 0
+        pts += 2 if any(w in tit for w in nv.split() if len(w) > 3) else 0
+        pts += 2 if any(k in tit for k in (" resumen ", " highlights ", " goles ", " goals ")) else 0
+        pts += 3 if any(" " + c + " " in canal for c in CANALES_CONFIABLES) else 0
+        return pts
+    if items:
+        mejor = max(items, key=puntaje)
+        s = mejor.get("snippet", {})
+        miniaturas = s.get("thumbnails", {})
+        foto = (miniaturas.get("maxres") or miniaturas.get("high") or miniaturas.get("medium") or miniaturas.get("default") or {}).get("url", "")
+        vid = (mejor.get("id") or {}).get("videoId")
+        if vid and puntaje(mejor) >= 4:
+            _videos[id_partido] = {"id": vid, "titulo": s.get("title", ""), "canal": s.get("channelTitle", ""),
+                                  "portada": foto or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
+                                  "enlace": f"https://www.youtube.com/watch?v={vid}"}
+            respuesta["video"] = _videos[id_partido]
+    return respuesta
+
+
+# ---------------------------------------------------------------------------
 # Ficha de clubes y jugadores: football-data.org + TheSportsDB (fotos, estadio, camiseta, clubes anteriores)
 # ---------------------------------------------------------------------------
 TSDB = "https://www.thesportsdb.com/api/v1/json/123"
@@ -347,12 +401,27 @@ def datos_club(id_equipo):
                 club["camisetas"].append({"tipo": tipos.get(k.get("strType"), k.get("strType") or ""), "imagen": k["strEquipment"]})
         if not club["camisetas"] and extra.get("strEquipment"):
             club["camisetas"].append({"tipo": "Titular", "imagen": extra["strEquipment"]})
+        fotos = {}
+        for jp in (primera_lista(tsdb(f"/lookup_all_players.php?id={extra['idTeam']}")) if extra.get("idTeam") else []):
+            f = jp.get("strCutout") or jp.get("strThumb") or ""
+            if f and jp.get("strPlayer"):
+                fotos[normalizar(jp["strPlayer"])] = f
+        for j in club["plantel"]:
+            j["foto"] = fotos.get(normalizar(j["nombre"]), "")
     try:
         prox = api(f"/teams/{id_equipo}/matches?status=SCHEDULED,TIMED&limit=5", ttl=900)
         club["proximos"] = [partido(p) for p in prox.get("matches", [])][:5]
     except Exception:
         club["proximos"] = []
     return club
+
+
+def foto_jugador(nombre):
+    from urllib.parse import quote
+    for x in primera_lista(tsdb("/searchplayers.php?p=" + quote(nombre), ttl=7 * 86400)):
+        if (x.get("strSport") or "Soccer") == "Soccer":
+            return {"foto": x.get("strCutout") or x.get("strThumb") or x.get("strRender") or ""}
+    return {"foto": ""}
 
 
 def datos_jugador_extra(nombre):
@@ -724,6 +793,16 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .camisetas img { width:100%; height:110px; object-fit:contain; }
 .camisetas figcaption { font-size:12px; font-weight:700; color:var(--suave); margin-top:6px; }
 .foto-jug { width:96px; height:96px; border-radius:48px; object-fit:cover; object-position:top; background:linear-gradient(#1B2E4F, #0D1626); border:2px solid var(--azulreal); flex:none; }
+.video { display:block; border-radius:16px; overflow:hidden; background:var(--tarj); border:1px solid var(--linea); }
+.portada-video { position:relative; aspect-ratio:16/9; background:#000; }
+.portada-video img { width:100%; height:100%; object-fit:cover; display:block; }
+.cargando-video { border-radius:16px; background:linear-gradient(90deg, #0D1626, #132039, #0D1626); }
+.play { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); width:68px; height:48px; border-radius:14px; background:#E5332A; display:flex; align-items:center; justify-content:center; box-shadow:0 4px 18px rgba(0,0,0,.5); }
+.info-video { padding:12px 14px; display:flex; flex-direction:column; gap:4px; }
+.info-video b { font-size:14px; line-height:1.35; }
+.info-video small { font-size:12px; color:var(--suave); }
+.avatar.grande { width:56px; height:56px; border-radius:28px; font-size:17px; }
+.avatar.con-foto { object-fit:cover; object-position:top; background:linear-gradient(#1B2E4F, #0D1626); }
 .creditos { margin:10px 10px 0; padding:22px 12px 26px; border-top:1px solid var(--linea); display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
 .creditos img { width:48px; height:48px; border-radius:10px; object-fit:cover; opacity:.9; }
 .creditos .nombre { font-family:Montserrat, sans-serif; font-weight:900; font-size:15px; letter-spacing:.5px; color:#E6E9EE; }
@@ -944,6 +1023,23 @@ async function cargarNoticias() {
   } catch (e) { el.innerHTML = ''; }
 }
 
+async function cargarResumenYT(id) {
+  const el = $('resumenYT'); if (!el) return;
+  try {
+    const r = await pedir('/api/resumen?id=' + id);
+    const v = r.video;
+    if (v) {
+      el.innerHTML = `<a class="video" href="${esc(v.enlace)}" target="_blank" rel="noopener" aria-label="Ver en YouTube: ${esc(v.titulo)}">
+        <div class="portada-video"><img src="${esc(v.portada)}" alt="" loading="lazy" referrerpolicy="no-referrer">
+          <span class="play">${svg('M8 5v14l11-7z',26,'fill="#fff" stroke="none"')}</span></div>
+        <div class="info-video"><b>${esc(v.titulo)}</b><small>${esc(v.canal)} · Ver en YouTube ↗</small></div></a>`;
+    } else {
+      const txt = r.motivo === 'no_termino' ? 'El resumen aparece cuando termina el partido.' : 'Todavía no encontramos el video del resumen.';
+      el.innerHTML = `<a class="boton yt" href="${esc(r.busqueda)}" target="_blank" rel="noopener">${svg('M8 5v14l11-7z',18,'fill="currentColor" stroke="none"')}Buscar el resumen en YouTube</a><p class="nota-pie" style="margin:6px 0 0">${txt}</p>`;
+    }
+  } catch (e) { el.innerHTML = ''; }
+}
+
 /* ---------- Partido ---------- */
 async function vistaPartido(id) {
   $('vista').innerHTML = volver('Partido') + '<div class="cargando">Cargando partido…</div>';
@@ -965,7 +1061,7 @@ async function vistaPartido(id) {
     <div class="pestanas" role="tablist">${pest.map((t, i) => `<button role="tab" data-p="${i}" class="${i === 0 ? 'on' : ''}">${t}</button>`).join('')}</div>
     <main id="panel"></main>`;
   const paneles = [
-    () => `<a class="boton yt" href="${yt}" target="_blank" rel="noopener">${svg('M8 5v14l11-7z',18,'fill="currentColor" stroke="none"')}Ver resumen en YouTube</a>
+    () => `<div id="resumenYT"><div class="portada-video cargando-video"></div></div>
       <section class="tarjeta pad"><h2 style="margin:0 0 4px;font-size:15px">Información</h2>
         <div class="dato"><span>Fecha</span><span>${esc(fechaTxt)}</span></div>
         ${p.medio && p.medio[0] !== null && p.medio[0] !== undefined ? `<div class="dato"><span>Primer tiempo</span><span>${p.medio[0]} - ${p.medio[1]}</span></div>` : ''}
@@ -983,7 +1079,7 @@ async function vistaPartido(id) {
         <section class="tarjeta">${h.partidos.map(x => filaPartido(x, true)).join('')}</section>`;
     }
   ];
-  const mostrar = (i) => { $('panel').innerHTML = paneles[i](); document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i)); };
+  const mostrar = (i) => { $('panel').innerHTML = paneles[i](); document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i)); if (i === 0) cargarResumenYT(p.id); };
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => mostrar(+b.dataset.p));
   mostrar(0);
 }
@@ -1003,6 +1099,7 @@ async function vistaLiga(cod, pestana) {
     } else if (pestana === 'goleadores') {
       const d = await pedir('/api/goleadores?liga=' + cod);
       $('panel').innerHTML = listaGoleadores(d, cod);
+      cargarFotos($('panel'));
     } else {
       const d = await pedir('/api/calendario?liga=' + cod);
       const porJornada = {};
@@ -1075,7 +1172,7 @@ function listaGoleadores(d, cod) {
   cacheGol[cod] = d;
   if (!d.goleadores.length) return '<div class="tarjeta aviso">Todavía no hay goleadores.</div>';
   return `<section class="tarjeta">${d.goleadores.map((j, i) => `<a class="jug" href="#/jugador/${cod}/${j.id}">
-    <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span><span class="avatar">${iniciales(j.nombre)}</span>
+    <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span>${caraHTML(j)}
     <span style="min-width:0"><b class="nom" style="display:block;font-size:14px">${esc(j.nombre)}</b><small style="color:var(--suave);display:flex;align-items:center;gap:6px">${escudo(j.equipo)}${esc(j.equipo.nombre)}</small></span>
     <span style="text-align:right"><span class="goles">${j.goles}</span><br><small style="color:var(--suave)">${j.asistencias} asist.</small></span></a>`).join('')}</section>`;
 }
@@ -1084,7 +1181,7 @@ async function vistaJugadores() {
   $('vista').innerHTML = volver('Goleadores') + `<main><div class="chips">${Object.keys(LIGAS).map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <a class="boton sec" href="#/comparar">Comparar dos jugadores</a><div id="lista"><div class="cargando">Cargando…</div></div></main>`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaJug = b.dataset.l; vistaJugadores(); });
-  try { $('lista').innerHTML = listaGoleadores(await goleadores(ligaJug), ligaJug); } catch (e) { $('lista').innerHTML = error(e); }
+  try { $('lista').innerHTML = listaGoleadores(await goleadores(ligaJug), ligaJug); cargarFotos($('lista')); } catch (e) { $('lista').innerHTML = error(e); }
 }
 function edad(n) { if (!n) return '-'; const d = new Date(n), h = new Date(); let a = h.getFullYear() - d.getFullYear(); if (h < new Date(h.getFullYear(), d.getMonth(), d.getDate())) a--; return a + ' años'; }
 const POS = { Offence:'Delantero', Midfield:'Mediocampista', Defence:'Defensor', Goalkeeper:'Arquero' };
@@ -1124,8 +1221,9 @@ async function vistaComparar(cod, idA) {
         <div class="barra"><div><i style="width:${Math.round(va / t * 100)}%;background:var(--plata)"></i></div><div><i style="width:${Math.round(vb / t * 100)}%;background:#FF9F43"></i></div></div></div>`;
     }).join('');
     $('cuerpo').innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      ${[a, b].map((x, i) => `<div class="tarjeta pad" style="text-align:center;border-top:3px solid ${i ? '#FF9F43' : 'var(--plata)'};display:flex;flex-direction:column;align-items:center;gap:6px"><span class="avatar" style="width:56px;height:56px;border-radius:28px;font-size:17px">${iniciales(x.nombre)}</span><b style="font-size:14px">${esc(x.nombre)}</b><small style="color:var(--suave);display:flex;gap:6px;align-items:center">${escudo(x.equipo)}${esc(x.equipo.nombre)}</small></div>`).join('')}</div>
+      ${[a, b].map((x, i) => `<div class="tarjeta pad" style="text-align:center;border-top:3px solid ${i ? '#FF9F43' : 'var(--plata)'};display:flex;flex-direction:column;align-items:center;gap:6px">${caraHTML(x, 'avatar grande')}<b style="font-size:14px">${esc(x.nombre)}</b><small style="color:var(--suave);display:flex;gap:6px;align-items:center">${escudo(x.equipo)}${esc(x.equipo.nombre)}</small></div>`).join('')}</div>
       <section class="tarjeta pad">${filas}</section>`;
+    cargarFotos($('cuerpo'));
   };
   $('vista').innerHTML = volver('Comparar jugadores', '#/jugadores') + `<main>
     <div class="chips">${Object.keys(LIGAS).map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
@@ -1191,10 +1289,35 @@ async function vistaClub(id) {
         ${c.proximos.length ? c.proximos.map(p => { const d = new Date(p.fecha + 'T12:00:00'); return `<div style="padding:8px 12px 0;font-size:11px;font-weight:700;color:var(--suave)">${DIAS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1} · ${esc(p.ligaNombre)}</div>` + filaPartido(p); }).join('') : '<div class="aviso">No hay partidos programados.</div>'}</section>
       ${c.plantel.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Plantel actual</b><small>${c.plantel.length} jugadores</small></div></div>
         ${orden.filter(g => grupos[g]).map(g => `<div style="padding:10px 12px 2px;font-size:11px;font-weight:800;letter-spacing:.6px;color:var(--suave)">${g.toUpperCase()}</div>` +
-          grupos[g].map(j => `<a class="jug" style="grid-template-columns:40px 1fr auto" href="#/ficha/${encodeURIComponent(j.nombre)}"><span class="avatar">${iniciales(j.nombre)}</span><span><b style="font-size:14px">${esc(j.nombre)}</b><br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small></span><small style="color:var(--suave)">${edad(j.nacimiento)}</small></a>`).join('')).join('')}</section>` : ''}
+          grupos[g].map(j => `<a class="jug" style="grid-template-columns:40px 1fr auto" href="#/ficha/${encodeURIComponent(j.nombre)}">${caraHTML(j)}<span><b style="font-size:14px">${esc(j.nombre)}</b><br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small></span><small style="color:var(--suave)">${edad(j.nacimiento)}</small></a>`).join('')).join('')}</section>` : ''}
       ${c.descripcion ? `<section class="tarjeta pad"><h2 style="margin:0 0 8px;font-size:15px">Historia</h2><p style="margin:0;font-size:13px;line-height:1.55;color:#C7D2E0">${esc(c.descripcion)}…</p></section>` : ''}
       <p class="nota-pie">Datos de football-data.org y TheSportsDB.</p>
     </main>`;
+  c.plantel.forEach(j => { if (j.foto) FOTOS[j.nombre] = j.foto; });
+  cargarFotos($('vista'));
+}
+/* ---------- Caras de los jugadores ---------- */
+const FOTOS = {};
+function caraHTML(j, cls = 'avatar') {
+  const f = FOTOS[j.nombre] || j.foto;
+  return f ? `<img class="${cls} con-foto" src="${esc(f)}" alt="" loading="lazy" referrerpolicy="no-referrer">`
+           : `<span class="${cls}" data-foto="${esc(j.nombre)}">${iniciales(j.nombre)}</span>`;
+}
+async function cargarFotos(raiz, alTerminar) {
+  const pendientes = [...new Set([...raiz.querySelectorAll('[data-foto]')].map(e => e.dataset.foto))].filter(n => !(n in FOTOS));
+  let i = 0, cambios = 0;
+  const trabajador = async () => {
+    while (i < pendientes.length) {
+      const n = pendientes[i++];
+      try { const r = await pedir('/api/foto?nombre=' + encodeURIComponent(n)); FOTOS[n] = r.foto || ''; } catch (e) { FOTOS[n] = ''; }
+      if (FOTOS[n]) {
+        cambios++;
+        raiz.querySelectorAll('[data-foto]').forEach(el => { if (el.dataset.foto === n) el.outerHTML = `<img class="${el.className} con-foto" src="${esc(FOTOS[n])}" alt="" referrerpolicy="no-referrer">`; });
+      }
+    }
+  };
+  await Promise.all([trabajador(), trabajador(), trabajador()]);
+  if (cambios && alTerminar) alTerminar();
 }
 /* ---------- Ficha extendida de un jugador: foto, datos y clubes anteriores ---------- */
 async function bloqueJugadorExtra(nombre, destino) {
@@ -1301,8 +1424,12 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_goleadores(liga))
         elif url.path == "/api/equipos":
             self.json(lambda: datos_equipos(liga))
+        elif url.path == "/api/resumen" and q.get("id", "").isdigit():
+            self.json(lambda: datos_resumen(q["id"]))
         elif url.path == "/api/club" and q.get("id", "").isdigit():
             self.json(lambda: datos_club(q["id"]))
+        elif url.path == "/api/foto" and 0 < len(q.get("nombre", "")) <= 80:
+            self.json(lambda: foto_jugador(q["nombre"]))
         elif url.path == "/api/jugador_extra" and 0 < len(q.get("nombre", "")) <= 80:
             self.json(lambda: datos_jugador_extra(q["nombre"]))
         elif url.path == "/api/proximos" and q.get("equipo", "").isdigit():
