@@ -164,6 +164,22 @@ def partido(p, liga_defecto=None):
 
 
 def datos_hoy(fecha):
+    grupos_hl = []
+    if HL_KEY:
+        for cod in HL_LIGAS:
+            try:
+                ps = sorted(hl_hoy(cod, fecha), key=lambda p: p["hora"])
+            except Exception:
+                continue
+            if ps:
+                grupos_hl.append({"liga": cod, "nombre": HL_LIGAS[cod][0], "region": HL_LIGAS[cod][1],
+                                  "emblema": ps[0]["ligaEmblema"], "partidos": [{k: v for k, v in p.items() if k != "_inicio"} for p in ps]})
+    res = datos_hoy_fd(fecha)
+    res["grupos"] = grupos_hl + res["grupos"]
+    return res
+
+
+def datos_hoy_fd(fecha):
     d = date.fromisoformat(fecha)
     hasta = (d + timedelta(days=1)).isoformat()
     datos = api(f"/matches?dateFrom={fecha}&dateTo={hasta}", ttl=60)
@@ -180,6 +196,10 @@ def datos_hoy(fecha):
 
 
 def datos_calendario(liga):
+    if liga in HL_LIGAS:
+        ps = hl_temporada(liga)
+        return {"liga": liga, "nombre": HL_LIGAS[liga][0], "emblema": ps[0]["ligaEmblema"] if ps else "",
+                "partidos": [{k: v for k, v in p.items() if k != "_inicio"} for p in ps]}
     datos = api(f"/competitions/{liga}/matches", ttl=1800)
     comp = datos.get("competition") or {}
     lista = [partido(p, liga) for p in datos.get("matches", [])]
@@ -189,6 +209,8 @@ def datos_calendario(liga):
 
 
 def datos_partido(id_partido):
+    if str(id_partido).startswith("h"):
+        return datos_partido_hl(str(id_partido)[1:])
     p = api(f"/matches/{id_partido}", ttl=60)
     res = partido(p)
     medio = (p.get("score") or {}).get("halfTime") or {}
@@ -218,6 +240,8 @@ def datos_partido(id_partido):
 
 
 def datos_tabla(liga):
+    if liga in HL_LIGAS:
+        return hl_tabla(liga)
     datos = api(f"/competitions/{liga}/standings", ttl=600)
     grupos = []
     for t in datos.get("standings", []):
@@ -234,6 +258,8 @@ def datos_tabla(liga):
 
 
 def datos_goleadores(liga):
+    if liga in HL_LIGAS:
+        return {"liga": liga, "nombre": HL_LIGAS[liga][0], "goleadores": []}
     datos = api(f"/competitions/{liga}/scorers?limit=30", ttl=600)
     lista = []
     for s in datos.get("scorers", []):
@@ -250,6 +276,14 @@ def datos_goleadores(liga):
 
 
 def datos_equipos(liga):
+    if liga in HL_LIGAS:
+        vistos, lista = set(), []
+        for g in hl_tabla(liga)["grupos"]:
+            for f in g["filas"]:
+                if f["equipo"]["id"] not in vistos:
+                    vistos.add(f["equipo"]["id"])
+                    lista.append(f["equipo"])
+        return {"liga": liga, "equipos": sorted(lista, key=lambda t: t["nombre"])}
     datos = api(f"/competitions/{liga}/teams", ttl=86400)
     lista = [equipo(t) for t in datos.get("teams", [])]
     lista.sort(key=lambda t: t["nombre"])
@@ -257,8 +291,439 @@ def datos_equipos(liga):
 
 
 def datos_proximos(id_equipo):
+    if str(id_equipo).startswith("h"):
+        return {"partidos": proximos_hl(str(id_equipo), 3)}
     datos = api(f"/teams/{id_equipo}/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED&limit=3", ttl=900)
     return {"partidos": [partido(p) for p in datos.get("matches", [])]}
+
+
+# ---------------------------------------------------------------------------
+# Highlightly: Liga Profesional, Copa Argentina, Libertadores y Sudamericana
+# Plan gratis = 100 pedidos por día. "Uso inteligente":
+#   - fuera del horario de partidos no se consulta nada (se usa lo guardado)
+#   - durante los partidos se reparte lo que queda del día: 75% para la Liga Profesional
+#   - solo se consulta cuando alguien está mirando la página
+# Clave en la variable HIGHLIGHTLY_KEY. Opcional: HL_IDS="LPF=123,CAR=456,LIB=789,SUD=321"
+# ---------------------------------------------------------------------------
+HL_KEY = os.environ.get("HIGHLIGHTLY_KEY", "").strip()
+HL_BASE = "https://soccer.highlightly.net"
+HL_LIGAS = {
+    "LPF": ("Liga Profesional", "Argentina"),
+    "CAR": ("Copa Argentina", "Argentina"),
+    "LIB": ("Copa Libertadores", "Sudamérica"),
+    "SUD": ("Copa Sudamericana", "Sudamérica"),
+}
+HL_BUSQUEDA = {"LPF": {"countryCode": "AR"}, "CAR": {"countryCode": "AR"},
+               "LIB": {"leagueName": "Libertadores"}, "SUD": {"leagueName": "Sudamericana"}}
+_EXCLUIR = (" reserva", " reserve", " femen", " women", " sub ", " u20", " u17", " u23", " youth", " juvenil", " futsal")
+
+
+def _elige(cod, nombre_norm):
+    if any(x in nombre_norm for x in _EXCLUIR):
+        return False
+    return {"LPF": " liga profesional " in nombre_norm or nombre_norm.strip() == "primera division",
+            "CAR": " copa argentina " in nombre_norm,
+            "LIB": " libertadores " in nombre_norm,
+            "SUD": " sudamericana " in nombre_norm}[cod]
+
+
+VIVO_HL = {"First half", "Second half", "Extra time", "Penalties", "In progress", "Half time", "Break time"}
+PAUSA_HL = {"Half time", "Break time"}
+_hl = {"restantes": None, "limite": None, "usados": 0, "dia": None, "error": ""}
+_hl_candado = threading.Lock()
+
+
+def _dia_cupo():
+    return datetime.now(timezone.utc).date()
+
+
+def hl(ruta, params=None, ttl=3600):
+    """Pide a Highlightly. Si se terminó el cupo o falla, devuelve lo último guardado."""
+    clave = "hl" + ruta + json.dumps(params or {}, sort_keys=True)
+    ahora = time.time()
+    viejo = _memoria.get(clave)
+    if viejo and ahora - viejo[0] < ttl:
+        return viejo[1]
+    if not HL_KEY:
+        raise RuntimeError("Falta cargar la clave de Highlightly (HIGHLIGHTLY_KEY) en Render.")
+    with _hl_candado:
+        if _hl["dia"] != _dia_cupo():
+            _hl.update(dia=_dia_cupo(), usados=0, restantes=None)
+        if _hl["restantes"] is not None and _hl["restantes"] <= 1:
+            if viejo:
+                return viejo[1]
+            raise RuntimeError("Se terminaron los pedidos gratis de hoy. Mañana se actualiza solo.")
+        try:
+            r = requests.get(HL_BASE + ruta, params=params, headers={"x-rapidapi-key": HL_KEY}, timeout=15)
+        except Exception as e:
+            _hl["error"] = str(e)[:120]
+            if viejo:
+                return viejo[1]
+            raise RuntimeError("Highlightly no responde en este momento.")
+        _hl["usados"] += 1
+        try:
+            _hl["restantes"] = int(r.headers.get("x-ratelimit-requests-remaining"))
+            _hl["limite"] = int(r.headers.get("x-ratelimit-requests-limit"))
+        except (TypeError, ValueError):
+            pass
+    if r.status_code != 200:
+        _hl["error"] = f"{r.status_code} {r.text[:120]}"
+        if r.status_code == 429:
+            _hl["restantes"] = 0
+        if viejo:
+            return viejo[1]
+        raise RuntimeError("Highlightly no devolvió datos (" + str(r.status_code) + ").")
+    datos = r.json()
+    _memoria[clave] = (ahora, datos)
+    return datos
+
+
+def _lista(d):
+    if isinstance(d, list):
+        return d
+    if isinstance(d, dict):
+        for k in ("data", "matches", "leagues", "teams"):
+            if isinstance(d.get(k), list):
+                return d[k]
+    return []
+
+
+def hl_liga(cod):
+    """(id, temporada) de cada torneo. Se busca una vez por mes, o se fija con HL_IDS."""
+    fijos = dict(x.split("=", 1) for x in os.environ.get("HL_IDS", "").replace(" ", "").split(",") if "=" in x)
+    datos = hl("/leagues", HL_BUSQUEDA[cod], ttl=30 * 86400)
+    elegida = None
+    for lg in _lista(datos):
+        if fijos.get(cod) and str(lg.get("id")) == fijos[cod]:
+            elegida = lg
+            break
+        if not fijos.get(cod) and _elige(cod, normalizar(lg.get("name"))):
+            elegida = lg
+            break
+    if not elegida:
+        if fijos.get(cod):
+            return int(fijos[cod]), datetime.now(ARG).year
+        raise RuntimeError(f"No encontramos {HL_LIGAS[cod][0]} en Highlightly.")
+    temporadas = [s.get("season") for s in (elegida.get("seasons") or []) if isinstance(s, dict) and s.get("season")]
+    return elegida.get("id"), (max(temporadas) if temporadas else datetime.now(ARG).year)
+
+
+def _equipo_hl(t):
+    t = t or {}
+    return {"id": f"h{t['id']}" if t.get("id") is not None else None, "nombre": t.get("name") or "A definir",
+            "escudo": t.get("logo") or "", "sigla": ""}
+
+
+def partido_hl(m, cod):
+    st = m.get("state") or {}
+    desc = st.get("description") or ""
+    marcador = ((st.get("score") or {}).get("current") or "")
+    gl = gv = None
+    mm = re.match(r"\s*(\d+)\s*-\s*(\d+)", str(marcador))
+    vivo = desc in VIVO_HL
+    terminado = desc.startswith("Finished") or desc == "Awarded"
+    if mm and (vivo or terminado):
+        gl, gv = int(mm.group(1)), int(mm.group(2))
+    estado = ("PAUSED" if desc in PAUSA_HL else "IN_PLAY") if vivo else "FINISHED" if terminado else \
+        "POSTPONED" if desc == "Postponed" else "CANCELLED" if desc in ("Cancelled", "Abandoned") else "TIMED"
+    dt = a_hora_arg(str(m.get("date", "")).strip('"'))
+    ronda = str(m.get("round") or "")
+    num = re.search(r"(\d+)\s*$", ronda)
+    lg = m.get("league") or {}
+    return {
+        "id": f"h{m.get('id')}", "fecha": dt.strftime("%Y-%m-%d"), "hora": dt.strftime("%H:%M"), "estado": estado,
+        "vivo": vivo, "terminado": terminado, "minuto": st.get("clock"),
+        "jornada": int(num.group(1)) if num and "season" in ronda.lower() else None,
+        "fase": None if (num and "season" in ronda.lower()) else ronda,
+        "liga": cod, "ligaNombre": HL_LIGAS[cod][0], "ligaEmblema": lg.get("logo") or "",
+        "local": _equipo_hl(m.get("homeTeam")), "visitante": _equipo_hl(m.get("awayTeam")),
+        "gl": gl, "gv": gv, "_inicio": dt.timestamp(),
+    }
+
+
+def hl_temporada(cod):
+    """Fixture completo de la temporada (unas pocas páginas, una vez por día)."""
+    id_liga, temporada = hl_liga(cod)
+    lista, offset = [], 0
+    for _ in range(8):
+        d = hl("/matches", {"leagueId": id_liga, "season": temporada, "limit": 100, "offset": offset}, ttl=86400)
+        pagina = _lista(d)
+        lista += pagina
+        total = ((d or {}).get("pagination") or {}).get("totalCount") if isinstance(d, dict) else None
+        offset += 100
+        if len(pagina) < 100 or (total is not None and offset >= total):
+            break
+    return [partido_hl(m, cod) for m in lista]
+
+
+# --- Uso inteligente de los pedidos durante los partidos ---
+VENTANA_ANTES, VENTANA_DESPUES = 5 * 60, 125 * 60
+VENTANA_MAXIMA = 170 * 60  # si el partido sigue (alargue, penales) se sigue siguiendo hasta acá
+
+
+def fin_ventana(p):
+    return p["_inicio"] + (VENTANA_MAXIMA if p.get("vivo") else VENTANA_DESPUES)
+
+
+def en_ventana(p, ahora=None):
+    ahora = ahora or time.time()
+    return not p["terminado"] and p["_inicio"] - VENTANA_ANTES <= ahora <= fin_ventana(p)
+
+
+# Prioridades: cuánto más seguido se actualiza cada uno, comparado con Boca (1 = el más rápido)
+PRIORIDAD = {"boca": 1.0, "river": 1.5, "LPF": 3.0, "otros": 4.0}
+MINIMO = {"boca": 1, "river": 2, "LPF": 3, "otros": 4}       # minutos mínimos entre consultas
+EQUIPOS_PRIORIDAD = {"boca": " boca juniors ", "river": " river plate "}
+
+
+def ids_prioridad():
+    """Busca los números de Boca y River en lo guardado de la Liga Profesional
+    (así no se confunde con River Plate de Uruguay)."""
+    ids = {}
+
+    def mirar(nombre, ident):
+        for clave, buscado in EQUIPOS_PRIORIDAD.items():
+            if normalizar(nombre) == buscado and ident:
+                ids[ident] = clave
+    for k, (t, d) in list(_memoria.items()):
+        if k.startswith("hlhoyLPF"):
+            for p in d:
+                mirar(p["local"]["nombre"], p["local"]["id"])
+                mirar(p["visitante"]["nombre"], p["visitante"]["id"])
+        elif k.startswith("hl/matches{") or k.startswith("hl/standings"):
+            for m in _lista(d):
+                if isinstance(m, dict) and _elige("LPF", normalizar((m.get("league") or {}).get("name"))):
+                    for lado in ("homeTeam", "awayTeam"):
+                        e = m.get(lado) or {}
+                        mirar(e.get("name"), f"h{e['id']}" if e.get("id") is not None else None)
+            if isinstance(d, dict) and _elige("LPF", normalizar((d.get("league") or {}).get("name"))):
+                for g in d.get("groups") or []:
+                    for f in g.get("standings") or []:
+                        e = f.get("team") or {}
+                        mirar(e.get("name"), f"h{e['id']}" if e.get("id") is not None else None)
+    return ids
+
+
+def prioridad_de(p, ids=None):
+    ids = ids if ids is not None else ids_prioridad()
+    claves = [ids.get(p["local"]["id"]), ids.get(p["visitante"]["id"])]
+    if "boca" in claves:
+        return "boca"
+    if "river" in claves:
+        return "river"
+    return "LPF" if p.get("liga") == "LPF" else "otros"
+
+
+def _minutos_en_vivo_restantes():
+    """Minutos de partido que faltan hasta que se renueva el cupo (00:00 UTC), según prioridad."""
+    ahora = time.time()
+    corte = datetime.combine(_dia_cupo() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).timestamp()
+    ids = ids_prioridad()
+    ventanas = {k: [] for k in PRIORIDAD}
+    for clave, (t, d) in list(_memoria.items()):
+        if not clave.startswith("hlhoy"):
+            continue
+        for p in d:
+            if p["terminado"]:
+                continue
+            a, b = max(ahora, p["_inicio"] - VENTANA_ANTES), min(corte, fin_ventana(p))
+            if b > a:
+                ventanas[prioridad_de(p, ids)].append((a, b))
+                if prioridad_de(p, ids) in ("boca", "river") and p.get("liga") == "LPF":
+                    ventanas["LPF"].append((a, b))  # el pedido general de la liga también corre
+
+    def union(iv):
+        total, fin = 0, 0
+        for a, b in sorted(iv):
+            a = max(a, fin)
+            if b > a:
+                total += b - a
+                fin = b
+        return total / 60
+    return {k: union(v) for k, v in ventanas.items()}
+
+
+def intervalos():
+    """Reparte los pedidos que quedan en el día: Boca primero, después River, la liga y las copas."""
+    restantes = _hl["restantes"] if _hl["restantes"] is not None else 100 - _hl["usados"]
+    disponibles = max(0, restantes - 15)  # 15 quedan de reserva para fichas de partidos
+    if disponibles <= 0:
+        return {k: 60 for k in PRIORIDAD}
+    minutos = _minutos_en_vivo_restantes()
+    # pedidos necesarios = suma(minutos / intervalo); intervalo = base * prioridad
+    base = sum(minutos[k] / PRIORIDAD[k] for k in PRIORIDAD) / (disponibles * 0.9)  # 10% de margen
+    return {k: max(MINIMO[k], int(base * PRIORIDAD[k]) + (0 if (base * PRIORIDAD[k]).is_integer() else 1)) for k in PRIORIDAD}
+
+
+def intervalo_minutos(cod):
+    return intervalos()["LPF" if cod == "LPF" else "otros"]
+
+
+def refrescar_prioritarios(lista):
+    """Partidos de Boca y River en vivo: se consultan solos, más seguido que el resto."""
+    ids = ids_prioridad()
+    iv = None
+    for p in lista:
+        if not en_ventana(p):
+            continue
+        clave_p = prioridad_de(p, ids)
+        if clave_p not in ("boca", "river"):
+            continue
+        iv = iv or intervalos()
+        try:
+            d = hl(f"/matches/{p['id'][1:]}", ttl=iv[clave_p] * 60)
+            m = d[0] if isinstance(d, list) and d else d
+            nuevo = partido_hl(m, p["liga"])
+            for k in ("gl", "gv", "minuto", "estado", "vivo", "terminado"):
+                p[k] = nuevo[k]
+        except Exception:
+            pass
+    return lista
+
+
+def hl_hoy(cod, fecha):
+    """Partidos de un torneo en una fecha. Solo se vuelve a consultar dentro del horario de partidos."""
+    clave = "hlhoy" + cod + fecha
+    hoy = datetime.now(ARG).strftime("%Y-%m-%d")
+    if fecha != hoy:
+        # otros días: se arman con el fixture de la temporada (no gasta pedidos extra)
+        return [p for p in hl_temporada(cod) if p["fecha"] == fecha]
+    ahora = time.time()
+    guardado = _memoria.get(clave)
+    if guardado:
+        t, lista = guardado
+        hay_partido = any(en_ventana(p, ahora) for p in lista)
+        if not hay_partido or ahora - t < intervalo_minutos(cod) * 60:
+            return refrescar_prioritarios(lista)  # fuera de horario: pausa. Dentro: solo Boca/River si toca
+    id_liga, temporada = hl_liga(cod)
+    d = hl("/matches", {"leagueId": id_liga, "season": temporada, "date": fecha, "timezone": "America/Argentina/Buenos_Aires"}, ttl=0)
+    lista = [p for p in (partido_hl(m, cod) for m in _lista(d)) if p["fecha"] == fecha]
+    _memoria[clave] = (ahora, lista)
+    return lista  # recién actualizado: no hace falta pedir Boca/River aparte
+
+
+def hl_tabla(cod):
+    id_liga, temporada = hl_liga(cod)
+    d = hl("/standings", {"leagueId": id_liga, "season": temporada}, ttl=6 * 3600)
+    grupos = []
+    for g in (d or {}).get("groups", []) if isinstance(d, dict) else []:
+        filas = []
+        for f in g.get("standings", []):
+            tot = f.get("total") or {}
+            gf, gc = tot.get("scoredGoals") or 0, tot.get("receivedGoals") or 0
+            filas.append({"pos": f.get("position"), "equipo": _equipo_hl(f.get("team")), "pj": tot.get("games") or 0,
+                          "g": tot.get("wins") or 0, "e": tot.get("draws") or 0, "p": tot.get("loses") or 0,
+                          "dg": gf - gc, "pts": f.get("points") or 0, "forma": ""})
+        nombre = re.sub(r"^.*? - ", "", g.get("name") or "") if len(d.get("groups", [])) > 1 else ""
+        grupos.append({"nombre": nombre, "filas": filas})
+    return {"liga": cod, "nombre": HL_LIGAS[cod][0], "grupos": grupos}
+
+
+def _cod_de_partido(id_txt, m=None):
+    for c in HL_LIGAS:
+        for k, (t, l) in list(_memoria.items()):
+            if k.startswith("hlhoy" + c) and any(p["id"] == id_txt for p in l):
+                return c
+    nombre_liga = normalizar(((m or {}).get("league") or {}).get("name"))
+    return next((c for c in HL_LIGAS if _elige(c, nombre_liga)), "LPF")
+
+
+def datos_partido_hl(id_num):
+    clave = "hl" + f"/matches/{id_num}" + "{}"
+    previo = _memoria.get(clave)
+    ttl = 0
+    if previo:
+        m0 = previo[1][0] if isinstance(previo[1], list) and previo[1] else previo[1]
+        desc = ((m0 or {}).get("state") or {}).get("description") or ""
+        if desc.startswith("Finished"):
+            ttl = 86400
+        elif desc in VIVO_HL:
+            p0 = partido_hl(m0, _cod_de_partido(f"h{id_num}", m0))
+            ttl = intervalos()[prioridad_de(p0)] * 60
+        else:
+            ttl = 1800
+    d = hl(f"/matches/{id_num}", ttl=ttl)
+    m = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
+    p = partido_hl(m, _cod_de_partido(f"h{id_num}", m))
+    res = dict(p)
+    res["medio"] = [None, None]
+    res["estadio"] = (m.get("venue") or {}).get("name", "") if isinstance(m.get("venue"), dict) else ""
+    res["arbitro"] = (m.get("referee") or {}).get("name", "") if isinstance(m.get("referee"), dict) else ""
+    eventos = []
+    for e in (m.get("events") or []):
+        eventos.append({"minuto": e.get("time") or "", "tipo": e.get("type") or "", "jugador": e.get("player") or "",
+                        "asistencia": e.get("assist") or "", "sale": e.get("substituted") or "",
+                        "equipo": f"h{(e.get('team') or {}).get('id')}"})
+    res["eventos"] = eventos
+    res["goles"] = [{"minuto": e["minuto"], "jugador": e["jugador"], "asistencia": e["asistencia"], "equipo": e["equipo"],
+                     "tipo": "OWN" if e["tipo"] == "Own Goal" else "PENALTY" if e["tipo"] == "Penalty" else ""}
+                    for e in eventos if e["tipo"] in ("Goal", "Own Goal", "Penalty")]
+    res["historial"] = None
+    res["fuente"] = "hl"
+    res["alineacion"] = None
+    if p["vivo"] or p["terminado"] or (p["_inicio"] - time.time() < 3600):
+        try:
+            al = hl(f"/lineups/{id_num}", ttl=86400 if p["terminado"] else 900)
+            al = al[0] if isinstance(al, list) and al else al
+
+            def lado(x):
+                x = x or {}
+                filas = [[{"nombre": j.get("name") or "", "numero": j.get("number")} for j in (fila if isinstance(fila, list) else [fila]) if isinstance(j, dict)]
+                         for fila in (x.get("initialLineup") or [])]
+                return {"formacion": x.get("formation") or "", "filas": filas,
+                        "suplentes": [{"nombre": j.get("name") or "", "numero": j.get("number")} for j in (x.get("substitutes") or []) if isinstance(j, dict)]}
+            if isinstance(al, dict) and (al.get("homeTeam") or al.get("awayTeam")):
+                res["alineacion"] = {"local": lado(al.get("homeTeam")), "visitante": lado(al.get("awayTeam"))}
+        except Exception:
+            pass
+    res.pop("_inicio", None)
+    return res
+
+
+def hl_equipo(id_txt):
+    """Nombre y escudo de un equipo de Highlightly, sacado de lo que ya está guardado."""
+    for c in HL_LIGAS:
+        try:
+            for p in hl_temporada(c):
+                for t in (p["local"], p["visitante"]):
+                    if t["id"] == id_txt:
+                        return t
+        except Exception:
+            continue
+    return {"id": id_txt, "nombre": "Equipo", "escudo": "", "sigla": ""}
+
+
+def proximos_hl(id_txt, cantidad=5):
+    ahora = time.time()
+    lista = []
+    for c in HL_LIGAS:
+        try:
+            lista += [p for p in hl_temporada(c) if not p["terminado"] and p["_inicio"] > ahora - 7200
+                      and id_txt in (p["local"]["id"], p["visitante"]["id"])]
+        except Exception:
+            continue
+    lista.sort(key=lambda p: p["_inicio"])
+    return [{k: v for k, v in p.items() if k != "_inicio"} for p in lista[:cantidad]]
+
+
+def datos_estadisticas_hl(id_num):
+    d = hl(f"/statistics/{id_num}", ttl=600)
+    equipos = d if isinstance(d, list) else _lista(d)
+    nombres, filas = {}, {}
+    for i, eq in enumerate(equipos[:2]):
+        for s in (eq.get("statistics") or []):
+            n = s.get("displayName") or s.get("name") or ""
+            if n:
+                filas.setdefault(n, [None, None])[i] = s.get("value")
+    return {"estadisticas": [{"nombre": n, "local": v[0], "visitante": v[1]} for n, v in filas.items()]}
+
+
+def hl_estado():
+    return {"clave": bool(HL_KEY), "usadosHoy": _hl["usados"], "restantes": _hl["restantes"], "limite": _hl["limite"],
+            "ultimoError": _hl["error"],
+            "intervalosMinutos": intervalos(), "minutosDePartidoQueFaltanHoy": {k: round(v) for k, v in _minutos_en_vivo_restantes().items()},
+            "equiposPrioridad": ids_prioridad(),
+            "ligas": {c: (lambda: (lambda r: {"id": r[0], "temporada": r[1]})(hl_liga(c)) if HL_KEY else None)() for c in HL_LIGAS}}
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +738,7 @@ _videos = {}
 
 
 def datos_resumen(id_partido):
-    p = partido(api(f"/matches/{id_partido}", ttl=300))
+    p = datos_partido_hl(str(id_partido)[1:]) if str(id_partido).startswith("h") else partido(api(f"/matches/{id_partido}", ttl=300))
     busqueda = f'{p["local"]["nombre"]} vs {p["visitante"]["nombre"]} resumen'
     respuesta = {"video": None, "busqueda": "https://www.youtube.com/results?search_query=" + requests.utils.quote(busqueda + " " + p["fecha"][:4])}
     if not YOUTUBE_KEY or not p["terminado"]:
@@ -379,6 +844,12 @@ def buscar_equipo_tsdb(nombres):
 
 def datos_club(id_equipo):
     """Datos básicos del club: salen rápido (football-data.org)."""
+    if str(id_equipo).startswith("h"):
+        t = hl_equipo(str(id_equipo))
+        return {"id": t["id"], "nombre": t["nombre"], "corto": t["nombre"], "escudo": t["escudo"], "fundacion": None,
+                "estadio": "", "direccion": "", "web": "", "colores": "", "dt": "", "plantel": [],
+                "capacidad": None, "ubicacion": "", "fotoEstadio": "", "camisetas": [], "descripcion": "",
+                "proximos": proximos_hl(str(id_equipo), 5)}
     t = api(f"/teams/{id_equipo}", ttl=86400)
     eq = equipo(t)
     club = {
@@ -402,7 +873,11 @@ def datos_club(id_equipo):
 def datos_club_extra(id_equipo):
     """Lo que viene de TheSportsDB: estadio, foto, camisetas, historia y caras. Se carga después."""
     from concurrent.futures import ThreadPoolExecutor
-    t = api(f"/teams/{id_equipo}", ttl=86400)
+    if str(id_equipo).startswith("h"):
+        n = hl_equipo(str(id_equipo))["nombre"]
+        t = {"shortName": n, "name": n, "squad": None}
+    else:
+        t = api(f"/teams/{id_equipo}", ttl=86400)
     res = {"capacidad": None, "ubicacion": "", "fundacion": None, "estadio": "", "descripcion": "",
            "fotoEstadio": "", "camisetas": [], "fotos": {}}
     extra = buscar_equipo_tsdb([t.get("shortName"), t.get("name")])
@@ -440,6 +915,10 @@ def datos_club_extra(id_equipo):
         f = por_nombre.get(normalizar(j.get("name", "")))
         if f:
             res["fotos"][j.get("name", "")] = f
+    if t.get("squad") is None:  # equipos de Highlightly: plantel desde TheSportsDB
+        res["plantel"] = [{"id": jp.get("idPlayer"), "nombre": jp.get("strPlayer") or "", "posicion": jp.get("strPosition") or "",
+                           "nacimiento": jp.get("dateBorn") or "", "nacionalidad": jp.get("strNationality") or "",
+                           "foto": jp.get("strCutout") or jp.get("strThumb") or ""} for jp in jugadores if jp.get("strPlayer")]
     return res
 
 
@@ -747,7 +1226,9 @@ nav.abajo .on { color:var(--azul); }
 .item { display:flex; align-items:center; gap:12px; min-height:44px; padding:0 10px; border-radius:10px; font-size:14px; font-weight:600; }
 .item:hover { background:var(--sup); }
 .item.off { color:#7A8799; } .item.off em { margin-left:auto; font-style:normal; font-size:10px; font-weight:700; color:var(--suave); }
-.pestanas { display:grid; grid-auto-flow:column; grid-auto-columns:1fr; background:var(--negro); border-bottom:1px solid var(--linea); }
+.pestanas { display:grid; grid-auto-flow:column; grid-auto-columns:minmax(max-content, 1fr); overflow-x:auto; scrollbar-width:none; background:var(--negro); border-bottom:1px solid var(--linea); }
+.pestanas::-webkit-scrollbar { display:none; }
+.pestanas button { padding:0 14px; white-space:nowrap; }
 .pestanas button { min-height:46px; border:0; background:none; font-size:13px; font-weight:700; color:var(--suave); border-bottom:3px solid transparent; }
 .pestanas button.on { color:var(--texto); border-bottom-color:var(--azul); }
 .volver { display:flex; align-items:center; gap:8px; padding:10px 12px; background:var(--negro); }
@@ -830,6 +1311,12 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .info-video small { font-size:12px; color:var(--suave); }
 .avatar.grande { width:56px; height:56px; border-radius:28px; font-size:17px; }
 .avatar.con-foto { object-fit:cover; object-position:top; background:linear-gradient(#1B2E4F, #0D1626); }
+.cancha { margin:12px; padding:18px 6px; border-radius:14px; display:flex; flex-direction:column; gap:16px;
+  background:repeating-linear-gradient(to bottom, #1E5B36 0 44px, #1A5130 44px 88px); border:2px solid rgba(255,255,255,.25); }
+.linea { display:flex; justify-content:space-around; }
+.slot { display:flex; flex-direction:column; align-items:center; gap:4px; width:64px; }
+.cara { width:46px; height:46px; border-radius:23px; border:2px solid #fff; background:#1B2E4F; color:#fff; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; object-fit:cover; object-position:top; box-shadow:0 2px 8px rgba(0,0,0,.4); }
+.nom-slot { font-size:11px; font-weight:700; background:rgba(5,7,13,.75); padding:1px 6px; border-radius:4px; max-width:76px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .creditos { margin:10px 10px 0; padding:22px 12px 26px; border-top:1px solid var(--linea); display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
 .creditos img { width:48px; height:48px; border-radius:10px; object-fit:cover; opacity:.9; }
 .creditos .nombre { font-family:Montserrat, sans-serif; font-weight:900; font-size:15px; letter-spacing:.5px; color:#E6E9EE; }
@@ -854,7 +1341,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
     <img src="/logo.png" alt="" onerror="this.remove()">
     <div class="nombre">TIKI<span>DATA</span></div>
     <p>Desarrollado por <b>Teo Gunther Crespo</b></p>
-    <p>© 2026 Tiki Data · Datos de football-data.org</p>
+    <p>© 2026 Tiki Data · Datos de football-data.org, Highlightly y TheSportsDB</p>
   </footer>
 </div>
 
@@ -875,7 +1362,8 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 
 <script>
 const LIGAS = __LIGAS__;
-const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9' };
+const HL = __HL__;  // torneos que vienen de Highlightly
+const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399' };
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -930,7 +1418,7 @@ function volver(titulo, destino='#/') {
 
 /* ---------- Menú y navegación ---------- */
 function armarMenu() {
-  const grupos = [['EUROPA', ['CL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']], ['AMÉRICA', ['BSA']], ['SELECCIONES', ['WC']]];
+  const grupos = [['ARGENTINA', ['LPF','CAR'].filter(c => LIGAS[c])], ['SUDAMÉRICA', ['LIB','SUD','BSA'].filter(c => LIGAS[c])], ['EUROPA', ['CL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']], ['SELECCIONES', ['WC']]].filter(g => g[1].length);
   let h = `<div class="grupo">
     <a class="item" href="#/">${svg(ICON.inicio,20)}Inicio</a>
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
@@ -938,7 +1426,7 @@ function armarMenu() {
     <a class="item" href="#/favoritos">${svg(ICON.estrella,20)}Mis favoritos</a></div>`;
   grupos.forEach(([n, cods]) => {
     h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c]}"></span>${esc(LIGAS[c][0])}</a>`).join('');
-    if (n === 'AMÉRICA') h += `<span class="item off"><span class="punto" style="background:#475569"></span>Liga Profesional Argentina<em>PRÓXIMAMENTE</em></span><span class="item off"><span class="punto" style="background:#475569"></span>Copa Libertadores<em>PRÓXIMAMENTE</em></span>`;
+    if (n === 'ARGENTINA' || (n === 'SUDAMÉRICA' && !LIGAS.LPF)) h += ['Primera Nacional', 'Liga uruguaya', 'MLS'].map(x => `<span class="item off"><span class="punto" style="background:#475569"></span>${x}<em>PRÓXIMAMENTE</em></span>`).join('');
     h += '</div>';
   });
   $('menuLigas').innerHTML = h;
@@ -1077,7 +1565,8 @@ async function vistaPartido(id) {
   const fechaTxt = `${DIAS_L[d.getDay()]} ${d.getDate()} de ${MESES_L[d.getMonth()]} · ${p.hora}`;
   const yt = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${p.local.nombre} vs ${p.visitante.nombre} resumen ${p.fecha.slice(0,4)}`);
   let estado = p.vivo ? `${estadoTexto(p)} · En vivo` : p.terminado ? 'Final' : fechaTxt;
-  const pest = ['Resumen', 'Goles', 'Historial'];
+  const esHL = p.fuente === 'hl';
+  const pest = esHL ? ['Resumen', 'Goles', 'Formación', 'Estadísticas', 'Minuto a minuto'] : ['Resumen', 'Goles', 'Historial'];
   $('vista').innerHTML = `<div class="volver"><a class="icono" href="javascript:history.back()" aria-label="Volver">${svg(ICON.atras)}</a>
       <a href="#/liga/${p.liga}" style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">${esc(p.ligaNombre)}</b><small style="color:var(--suave);font-size:12px">${p.jornada ? 'Fecha ' + p.jornada : esc((p.fase || '').replaceAll('_',' ').toLowerCase())}</small></a></div>
     <section class="marcador">
@@ -1095,20 +1584,62 @@ async function vistaPartido(id) {
         ${p.estadio ? `<div class="dato"><span>Estadio</span><span>${esc(p.estadio)}</span></div>` : ''}
         ${p.arbitro ? `<div class="dato"><span>Árbitro</span><span>${esc(p.arbitro)}</span></div>` : ''}
       </section>
-      <p class="nota-pie">El minuto a minuto, las formaciones y las estadísticas del partido no vienen en el plan gratuito de la API. Se pueden sumar con una API más completa.</p>`,
-    () => p.goles.length ? `<section class="tarjeta pad">${p.goles.map(g => `<div class="dato"><span style="color:var(--texto);font-weight:700">${g.minuto ? g.minuto + "'" : ''}</span><span style="flex:1">${esc(g.jugador)}${g.tipo === 'OWN' ? ' (en contra)' : g.tipo === 'PENALTY' ? ' (penal)' : ''}</span><span>${esc(g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre)}</span></div>`).join('')}</section>`
-      : `<div class="tarjeta aviso">${jugado ? 'El plan gratuito de la API no trae quién hizo los goles de este partido.' : 'Todavía no se jugó.'}</div>`,
-    () => {
+      ${esHL ? (p.vivo ? '<p class="nota-pie">Se actualiza solo cada pocos minutos mientras se juega.</p>' : '') : '<p class="nota-pie">El minuto a minuto, las formaciones y las estadísticas del partido no vienen en el plan gratuito de la API. Se pueden sumar con una API más completa.</p>'}`,
+    () => p.goles.length ? `<section class="tarjeta pad">${p.goles.map(g => `<div class="dato"><span style="color:var(--texto);font-weight:700">${g.minuto ? g.minuto + "'" : ''}</span><span style="flex:1">${esc(g.jugador)}${g.tipo === 'OWN' ? ' (en contra)' : g.tipo === 'PENALTY' ? ' (penal)' : ''}${g.asistencia ? `<br><small style="color:var(--suave)">Asistencia: ${esc(g.asistencia)}</small>` : ''}</span><span>${esc(g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre)}</span></div>`).join('')}</section>`
+      : `<div class="tarjeta aviso">${jugado ? (esHL ? 'Sin goles por ahora.' : 'El plan gratuito de la API no trae quién hizo los goles de este partido.') : 'Todavía no se jugó.'}</div>`,
+    ...(esHL ? [() => panelFormacion(p), () => '<div id="stats"><div class="cargando">Cargando estadísticas…</div></div>', () => panelMinuto(p)] : [() => {
       const h = p.historial;
       if (!h || !h.total) return '<div class="tarjeta aviso">No hay historial entre estos equipos.</div>';
       return `<section class="tarjeta pad"><h2 style="margin:0 0 10px;font-size:15px">Últimos ${h.total} enfrentamientos</h2>
         <div class="datos3"><div><small>Ganó ${esc(p.local.nombre)}</small><b>${h.local ?? 0}</b></div><div><small>Empates</small><b>${h.empates ?? 0}</b></div><div><small>Ganó ${esc(p.visitante.nombre)}</small><b>${h.visitante ?? 0}</b></div></div></section>
         <section class="tarjeta">${h.partidos.map(x => filaPartido(x, true)).join('')}</section>`;
-    }
+    }])
   ];
-  const mostrar = (i) => { $('panel').innerHTML = paneles[i](); document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i)); if (i === 0) cargarResumenYT(p.id); };
+  const mostrar = (i) => { $('panel').innerHTML = paneles[i](); document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i)); if (i === 0) cargarResumenYT(p.id); if (esHL && i === 2) cargarFotos($('panel')); if (esHL && i === 3) cargarStats(p); };
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => mostrar(+b.dataset.p));
   mostrar(0);
+}
+
+const lado = { local: true };
+function panelFormacion(p) {
+  const a = p.alineacion;
+  if (!a) return `<div class="tarjeta aviso">${p.terminado || p.vivo ? 'No hay formaciones para este partido.' : 'Las formaciones aparecen cerca de una hora antes del partido.'}</div>`;
+  const pintar = (eq, t) => {
+    if (!eq || !eq.filas.length) return '<div class="aviso">Sin datos.</div>';
+    const filas = eq.filas.slice().reverse();
+    return `<div class="cancha">${filas.map(f => `<div class="linea">${f.map(j => `<div class="slot">${caraHTML(j, 'cara')}<span class="nom-slot">${j.numero ? j.numero + ' ' : ''}${esc(String(j.nombre).split(' ').slice(-1)[0])}</span></div>`).join('')}</div>`).join('')}</div>
+      ${eq.suplentes.length ? `<div style="padding:0 12px 12px"><b style="font-size:13px">Suplentes</b><div class="chips" style="margin-top:8px">${eq.suplentes.map(j => `<span class="chip" style="cursor:default">${j.numero ? j.numero + ' · ' : ''}${esc(j.nombre)}</span>`).join('')}</div></div>` : ''}`;
+  };
+  const html = (k) => `<section class="tarjeta"><div class="chips" style="padding:10px 12px 0">
+      <button class="chip ${k === 'local' ? 'on' : ''}" data-lado="local">${esc(p.local.nombre)}${a.local.formacion ? ' · ' + esc(a.local.formacion) : ''}</button>
+      <button class="chip ${k === 'visitante' ? 'on' : ''}" data-lado="visitante">${esc(p.visitante.nombre)}${a.visitante.formacion ? ' · ' + esc(a.visitante.formacion) : ''}</button></div>
+    ${pintar(a[k], k === 'local' ? p.local : p.visitante)}</section>`;
+  setTimeout(() => document.querySelectorAll('[data-lado]').forEach(b => b.onclick = () => { $('panel').innerHTML = html(b.dataset.lado); panelFormacionEventos(html); cargarFotos($('panel')); }), 0);
+  return html('local');
+}
+function panelFormacionEventos(html) { document.querySelectorAll('[data-lado]').forEach(b => b.onclick = () => { $('panel').innerHTML = html(b.dataset.lado); panelFormacionEventos(html); cargarFotos($('panel')); }); }
+const STATS_ES = { 'Ball possession':'Posesión', 'Possession':'Posesión', 'Total shots':'Remates', 'Shots on target':'Remates al arco', 'Shots off target':'Remates afuera', 'Blocked shots':'Remates bloqueados', 'Corner kicks':'Córners', 'Corners':'Córners', 'Fouls':'Faltas', 'Offsides':'Offsides', 'Yellow cards':'Amarillas', 'Red cards':'Rojas', 'Goalkeeper saves':'Atajadas', 'Total passes':'Pases', 'Passes accurate':'Pases correctos', 'Expected goals':'Goles esperados (xG)' };
+async function cargarStats(p) {
+  const el = $('stats'); if (!el) return;
+  try {
+    const d = await pedir('/api/estadisticas?id=' + p.id);
+    if (!d.estadisticas.length) { el.innerHTML = '<div class="tarjeta aviso">Todavía no hay estadísticas de este partido.</div>'; return; }
+    const num = (v) => parseFloat(String(v ?? '0').replace('%', '').replace(',', '.')) || 0;
+    el.innerHTML = `<section class="tarjeta pad"><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--suave);margin-bottom:6px"><span>${esc(p.local.nombre)}</span><span>${esc(p.visitante.nombre)}</span></div>
+      ${d.estadisticas.map(s => { const a = num(s.local), b = num(s.visitante), t = (a + b) || 1; return `<div style="padding:10px 0;border-top:1px solid var(--linea)">
+        <div style="display:grid;grid-template-columns:60px 1fr 60px;font-size:14px"><b>${esc(s.local ?? '-')}</b><span style="text-align:center;font-size:12px;color:var(--suave)">${esc(STATS_ES[s.nombre] || s.nombre)}</span><b style="text-align:right">${esc(s.visitante ?? '-')}</b></div>
+        <div class="barra"><div><i style="width:${Math.round(a / t * 100)}%;background:var(--plata)"></i></div><div><i style="width:${Math.round(b / t * 100)}%;background:#FF9F43"></i></div></div></div>`; }).join('')}</section>`;
+  } catch (e) { el.innerHTML = error(e); }
+}
+const EVENTO = { 'Goal':['⚽','Gol'], 'Own Goal':['⚽','Gol en contra'], 'Penalty':['⚽','Gol de penal'], 'Missed Penalty':['✕','Penal errado'], 'Yellow Card':['▮','Amarilla'], 'Red Card':['▮','Roja'], 'Substitution':['⇄','Cambio'], 'VAR Goal Confirmed':['VAR','Gol confirmado'], 'VAR Goal Cancelled':['VAR','Gol anulado'], 'VAR Goal Cancelled - Offside':['VAR','Gol anulado por offside'], 'VAR Penalty':['VAR','Penal por VAR'], 'VAR Penalty Cancelled':['VAR','Penal anulado'] };
+function panelMinuto(p) {
+  if (!p.eventos || !p.eventos.length) return `<div class="tarjeta aviso">${p.vivo || p.terminado ? 'Todavía no hay jugadas importantes.' : 'El partido no empezó.'}</div>`;
+  const lista = p.eventos.slice().reverse();
+  return `<section class="tarjeta pad">${lista.map(e => { const [ic, txt] = EVENTO[e.tipo] || ['•', e.tipo]; const eq = e.equipo === p.local.id ? p.local.nombre : p.visitante.nombre;
+    const color = e.tipo === 'Yellow Card' ? '#F5C451' : e.tipo === 'Red Card' ? '#FF5A5F' : 'var(--texto)';
+    return `<div class="dato" style="align-items:flex-start"><b style="min-width:40px;color:var(--suave)">${esc(e.minuto)}'</b>
+      <span style="min-width:30px;color:${color};font-weight:800">${ic}</span>
+      <span style="flex:1"><b>${txt}</b> · ${esc(eq)}<br><small style="color:#C7D2E0">${esc(e.jugador)}${e.tipo === 'Substitution' && e.sale ? ' entra por ' + esc(e.sale) : ''}${e.asistencia ? ' · asistencia de ' + esc(e.asistencia) : ''}</small></span></div>`; }).join('')}</section>`;
 }
 
 /* ---------- Liga: partidos por fecha, tabla y goleadores ---------- */
@@ -1153,12 +1684,17 @@ async function vistaLiga(cod, pestana) {
 const cal = { liga: 'ALL', mes: new Date().getMonth(), anio: new Date().getFullYear(), dia: new Date().getDate(), datos: {} };
 async function vistaCalendario() {
   $('vista').innerHTML = volver('Calendario') + `<main id="panel"><div class="cargando">Cargando el calendario de todas las ligas…<br><small>La primera vez puede tardar hasta un minuto.</small></div></main>`;
-  const cods = Object.keys(LIGAS);
+  const cods = Object.keys(LIGAS).filter(c => !HL.includes(c));
   await Promise.all(cods.map(async c => { if (!cal.datos[c]) { try { cal.datos[c] = (await pedir('/api/calendario?liga=' + c)).partidos; } catch (e) { cal.datos[c] = []; } } }));
   dibujarCalendario();
 }
 function dibujarCalendario() {
-  const activas = cal.liga === 'ALL' ? Object.keys(LIGAS) : [cal.liga];
+  if (cal.liga !== 'ALL' && !cal.datos[cal.liga]) {
+    $('panel').innerHTML = '<div class="cargando">Cargando el calendario…</div>';
+    pedir('/api/calendario?liga=' + cal.liga).then(d => { cal.datos[cal.liga] = d.partidos; }).catch(() => { cal.datos[cal.liga] = []; }).finally(dibujarCalendario);
+    return;
+  }
+  const activas = cal.liga === 'ALL' ? Object.keys(LIGAS).filter(c => cal.datos[c]) : [cal.liga];
   const porDia = {};
   activas.forEach(c => (cal.datos[c] || []).forEach(p => { (porDia[p.fecha] ||= []).push(p); }));
   const pad = (n) => String(n).padStart(2, '0');
@@ -1197,7 +1733,7 @@ const cacheGol = {};
 async function goleadores(cod) { if (!cacheGol[cod]) cacheGol[cod] = await pedir('/api/goleadores?liga=' + cod); return cacheGol[cod]; }
 function listaGoleadores(d, cod) {
   cacheGol[cod] = d;
-  if (!d.goleadores.length) return '<div class="tarjeta aviso">Todavía no hay goleadores.</div>';
+  if (!d.goleadores.length) return `<div class="tarjeta aviso">${HL.includes(cod) ? 'La tabla de goleadores de este torneo llega más adelante.' : 'Todavía no hay goleadores.'}</div>`;
   return `<section class="tarjeta">${d.goleadores.map((j, i) => `<a class="jug" href="#/jugador/${cod}/${j.id}">
     <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span>${caraHTML(j)}
     <span style="min-width:0"><b class="nom" style="display:block;font-size:14px">${esc(j.nombre)}</b><small style="color:var(--suave);display:flex;align-items:center;gap:6px">${escudo(j.equipo)}${esc(j.equipo.nombre)}</small></span>
@@ -1205,7 +1741,7 @@ function listaGoleadores(d, cod) {
 }
 let ligaJug = 'PD';
 async function vistaJugadores() {
-  $('vista').innerHTML = volver('Goleadores') + `<main><div class="chips">${Object.keys(LIGAS).map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
+  $('vista').innerHTML = volver('Goleadores') + `<main><div class="chips">${Object.keys(LIGAS).filter(c => !HL.includes(c)).map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <a class="boton sec" href="#/comparar">Comparar dos jugadores</a><div id="lista"><div class="cargando">Cargando…</div></div></main>`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaJug = b.dataset.l; vistaJugadores(); });
   try { $('lista').innerHTML = listaGoleadores(await goleadores(ligaJug), ligaJug); cargarFotos($('lista')); } catch (e) { $('lista').innerHTML = error(e); }
@@ -1253,7 +1789,7 @@ async function vistaComparar(cod, idA) {
     cargarFotos($('cuerpo'));
   };
   $('vista').innerHTML = volver('Comparar jugadores', '#/jugadores') + `<main>
-    <div class="chips">${Object.keys(LIGAS).map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
+    <div class="chips">${Object.keys(LIGAS).filter(c => !HL.includes(c)).map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
     <label style="font-size:12px;color:var(--suave)">Jugador 1<select id="selA">${opciones(a)}</select></label>
     <label style="font-size:12px;color:var(--suave)">Jugador 2<select id="selB">${opciones(b)}</select></label>
     <div id="cuerpo" style="display:flex;flex-direction:column;gap:12px"></div></main>`;
@@ -1269,7 +1805,7 @@ async function vistaFavoritos() {
   $('vista').innerHTML = volver('Mis clubes favoritos') + `<main>
     <p class="nota-pie" style="margin:0">Tocá la estrella de los clubes que querés seguir. Sus partidos aparecen primero en el Inicio. Se guardan en este dispositivo.</p>
     ${favs.length ? `<section class="tarjeta pad"><b style="font-size:14px">Elegidos (${favs.length})</b><div class="chips" style="margin-top:10px">${favs.map(f => `<button class="chip on" data-quitar="${f.id}">${escudo(f)}${esc(f.nombre)} ✕</button>`).join('')}</div></section>` : ''}
-    <div class="chips">${Object.keys(LIGAS).filter(c => c !== 'CL' && c !== 'WC').map(c => `<button class="chip ${c === ligaFav ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
+    <div class="chips">${Object.keys(LIGAS).filter(c => !['CL', 'WC', 'CAR', 'LIB', 'SUD'].includes(c)).map(c => `<button class="chip ${c === ligaFav ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <div id="clubes"><div class="cargando">Cargando clubes…</div></div></main>`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaFav = b.dataset.l; vistaFavoritos(); });
   document.querySelectorAll('[data-quitar]').forEach(b => b.onclick = () => { guardar('tiki_favs', favs.filter(f => String(f.id) !== b.dataset.quitar)); vistaFavoritos(); });
@@ -1301,6 +1837,7 @@ async function vistaClub(id) {
   pedir('/api/club_extra?id=' + id).then(x => {
     if (location.hash !== '#/club/' + id) return;
     Object.entries(x.fotos || {}).forEach(([n, f]) => { FOTOS[n] = f; });
+    if (x.plantel && x.plantel.length && !c.plantel.length) c.plantel = x.plantel;
     ['capacidad', 'ubicacion', 'fotoEstadio', 'camisetas', 'descripcion'].forEach(k => { if (x[k] && (!Array.isArray(x[k]) || x[k].length)) c[k] = x[k]; });
     c.fundacion = c.fundacion || x.fundacion; c.estadio = c.estadio || x.estadio;
     const y = window.scrollY; dibujarClub(c); window.scrollTo(0, y);
@@ -1411,6 +1948,7 @@ async function vistaFicha(nombre) {
 function ruta() {
   const partes = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const [v, a, b] = partes;
+  cerrarMenu();
   window.scrollTo(0, 0);
   const nav = { '': 'inicio', dia: 'inicio', calendario: 'calendario', favoritos: 'favoritos', jugadores: 'jugadores', jugador: 'jugadores', comparar: 'jugadores', ficha: 'jugadores' };
   navAbajo(nav[v || ''] || '');
@@ -1459,7 +1997,8 @@ class Manejador(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         liga = q.get("liga", "")
         if url.path == "/":
-            pagina = PAGINA.replace("__LIGAS__", json.dumps({k: list(v) for k, v in LIGAS.items()}, ensure_ascii=False))
+            visibles = {**({k: list(v) for k, v in HL_LIGAS.items()} if HL_KEY else {}), **{k: list(v) for k, v in LIGAS.items()}}
+            pagina = PAGINA.replace("__LIGAS__", json.dumps(visibles, ensure_ascii=False)).replace("__HL__", json.dumps(list(HL_LIGAS) if HL_KEY else []))
             self.responder(200, "text/html; charset=utf-8", pagina)
         elif url.path == "/logo.png":
             ruta = os.path.join(CARPETA, "tikidata_escudo.png")
@@ -1468,7 +2007,7 @@ class Manejador(BaseHTTPRequestHandler):
                     self.responder(200, "image/png", f.read())
             else:
                 self.responder(404, "text/plain", "Sin logo")
-        elif url.path.startswith("/api/") and liga and liga not in LIGAS:
+        elif url.path.startswith("/api/") and liga and liga not in LIGAS and not (HL_KEY and liga in HL_LIGAS):
             self.responder(400, "application/json", json.dumps({"error": "Liga no disponible"}))
         elif url.path == "/api/hoy":
             fecha = q.get("fecha") or datetime.now(ARG).strftime("%Y-%m-%d")
@@ -1478,7 +2017,7 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_hoy(fecha))
         elif url.path == "/api/calendario":
             self.json(lambda: datos_calendario(liga))
-        elif url.path == "/api/partido" and q.get("id", "").isdigit():
+        elif url.path == "/api/partido" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_partido(q["id"]))
         elif url.path == "/api/tabla":
             self.json(lambda: datos_tabla(liga))
@@ -1486,18 +2025,22 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_goleadores(liga))
         elif url.path == "/api/equipos":
             self.json(lambda: datos_equipos(liga))
-        elif url.path == "/api/resumen" and q.get("id", "").isdigit():
+        elif url.path == "/api/resumen" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_resumen(q["id"]))
-        elif url.path == "/api/club_extra" and q.get("id", "").isdigit():
+        elif url.path == "/api/club_extra" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_club_extra(q["id"]))
-        elif url.path == "/api/club" and q.get("id", "").isdigit():
+        elif url.path == "/api/club" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_club(q["id"]))
         elif url.path == "/api/foto" and 0 < len(q.get("nombre", "")) <= 80:
             self.json(lambda: foto_jugador(q["nombre"]))
         elif url.path == "/api/jugador_extra" and 0 < len(q.get("nombre", "")) <= 80:
             self.json(lambda: datos_jugador_extra(q["nombre"]))
-        elif url.path == "/api/proximos" and q.get("equipo", "").isdigit():
+        elif url.path == "/api/proximos" and re.fullmatch(r"h?\d{1,12}", q.get("equipo", "")):
             self.json(lambda: datos_proximos(q["equipo"]))
+        elif url.path == "/api/estadisticas" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
+            self.json(lambda: datos_estadisticas_hl(q["id"][1:]))
+        elif url.path == "/api/hl_estado":
+            self.json(hl_estado)
         elif url.path == "/api/noticias":
             prefs = re.sub(r"[^a-z,]", "", q.get("prefs", ""))[:60]
             self.json(lambda: datos_noticias(prefs))
