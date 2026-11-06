@@ -974,24 +974,79 @@ def _camisetas_wiki(ficha):
     return kits
 
 
-def _buscar_pagina(idioma, nombres):
-    for n in nombres:
-        n = (n or "").strip()
-        if not n:
-            continue
-        d = wiki(idioma, {"action": "query", "list": "search", "srlimit": 6,
-                          "srsearch": f'{n} hastemplate:"{FICHAS[idioma]}"'})
-        for r in ((d.get("query") or {}).get("search") or []):
-            t = r.get("title", "")
-            if not any(x in t.lower() for x in NO_ES_EL_CLUB):
+PARTES_HTML = {"left_arm": "la", "body": "b", "right_arm": "ra", "shorts": "sh", "socks": "so"}
+NOMBRES_KIT = ["Titular", "Suplente", "Alternativa"]
+
+
+def _camisetas_html(idioma, titulo):
+    """Copia las camisetas tal cual las dibuja Wikipedia: cada parte (mangas, cuerpo, short y medias)
+    es un dibujo pixelado encima de un color de fondo."""
+    d = wiki(idioma, {"action": "parse", "page": titulo, "prop": "text", "section": 0, "redirects": 1,
+                      "disableeditsection": 1, "disablelimitreport": 1}) or {}
+    html = ((d.get("parse") or {}).get("text")) or ""
+    if isinstance(html, dict):
+        html = html.get("*", "")
+    kits, actual = [], None
+    for m in re.finditer(r'<img[^>]*?\ssrc="([^"]*?Kit_(left_arm|body|right_arm|shorts|socks)[^"]*)"', html):
+        parte = PARTES_HTML[m.group(2)]
+        antes = html[max(0, m.start() - 800):m.start()]
+        estilos = [e for e in re.findall(r'style="([^"]*)"', antes) if "background" in e]
+        color = ""
+        if estilos:
+            c = re.search(r"background(?:-color)?\s*:\s*([^;\"]+)", estilos[-1])
+            color = c.group(1).strip() if c else ""
+        if not re.fullmatch(r"#[0-9A-Fa-f]{3,8}|[A-Za-z]{3,20}|rgb\([\d,\s]+\)", color):
+            color = ""
+        src = m.group(1).replace("&amp;", "&")
+        src = "https:" + src if src.startswith("//") else src
+        if parte == "la" or actual is None or parte in actual["partes"]:
+            if len(kits) >= 3:
+                break
+            actual = {"tipo": NOMBRES_KIT[len(kits)], "partes": {}}
+            kits.append(actual)
+        pos = {}
+        if estilos:
+            for k in ("left", "top", "width", "height"):
+                v = re.search(r"(?:^|;)\s*" + k + r"\s*:\s*(-?\d+(?:\.\d+)?)px", estilos[-1])
+                if v:
+                    pos[k] = float(v.group(1))
+        actual["partes"][parte] = {"color": color, "img": src, "pos": pos}
+    return [k for k in kits if "b" in k["partes"]]
+
+
+GENERICAS = {"club", "atletico", "atlético", "deportivo", "sociedad", "sport", "sporting", "football", "futbol",
+             "fútbol", "real", "city", "united", "union", "unión", "the", "and", "del", "de", "la", "los", "las"}
+
+
+def _palabras_clave(n):
+    return [w for w in normalizar(re.sub(r"\b(FC|CF|AFC|SC|CA|AC|SSC|FK|SK|CD|CS)\b", "", n or "")).split()
+            if len(w) > 2 and w not in GENERICAS]
+
+
+def _buscar_pagina(idioma, nombres, pais=""):
+    for extra in ([" " + pais] if pais else []) + [""]:
+        for n in nombres:
+            n = (n or "").strip()
+            if not n:
+                continue
+            claves = _palabras_clave(n)
+            d = wiki(idioma, {"action": "query", "list": "search", "srlimit": 8,
+                              "srsearch": f'{n}{extra} hastemplate:"{FICHAS[idioma]}"'})
+            for r in ((d.get("query") or {}).get("search") or []):
+                t = r.get("title", "")
+                tn = normalizar(t)
+                if any(x in t.lower() for x in NO_ES_EL_CLUB):
+                    continue
+                if claves and sum(" " + w + " " in tn for w in claves) < max(1, (len(claves) + 1) // 2):
+                    continue  # que el título tenga el nombre del club (evita confundir clubes)
                 return t
     return ""
 
 
-def datos_wiki(nombres):
+def datos_wiki(nombres, pais=""):
     """Busca el club en Wikipedia (primero en español) y devuelve sus datos."""
     for idioma in ("es", "en"):
-        titulo = _buscar_pagina(idioma, nombres)
+        titulo = _buscar_pagina(idioma, nombres, pais)
         if not titulo:
             continue
         d = wiki(idioma, {"action": "query", "titles": titulo, "redirects": 1,
@@ -1017,7 +1072,7 @@ def datos_wiki(nombres):
             "apodo": _limpio(_campo(ficha, "apodo", "apodos", "nickname"))[:80],
             "dt": _limpio(_campo(ficha, "entrenador", "manager", "head_coach", "coach"))[:60],
             "descripcion": (paginas[0].get("extract") or "")[:700] if idioma == "es" else "",
-            "camisetas": _camisetas_wiki(ficha), "fotoEstadio": "",
+            "camisetas": _camisetas_html(idioma, titulo) or _camisetas_wiki(ficha), "fotoEstadio": "",
         }
         if enlace:  # foto del estadio: la imagen principal de la página del estadio
             e = wiki(idioma, {"action": "query", "titles": enlace.group(1).strip(), "redirects": 1,
@@ -1086,6 +1141,18 @@ def _temporada_actual(texto):
     return bool(anios) and max(anios) >= datetime.now(ARG).year - 1
 
 
+def es_argentino(id_txt):
+    if not id_txt.startswith("h"):
+        return False
+    for c in ("LPF", "CAR"):
+        try:
+            if any(id_txt in (p["local"]["id"], p["visitante"]["id"]) for p in hl_temporada(c)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def datos_club_extra(id_equipo):
     """Estadio, foto, camisetas e historia: TheSportsDB + Wikipedia. Se carga después."""
     from concurrent.futures import ThreadPoolExecutor
@@ -1095,10 +1162,11 @@ def datos_club_extra(id_equipo):
     else:
         t = api(f"/teams/{id_equipo}", ttl=86400)
     nombres = [t.get("shortName"), t.get("name")]
+    pais = "Argentina" if es_argentino(str(id_equipo)) else ""
     res = {"capacidad": None, "ubicacion": "", "fundacion": None, "estadio": "", "descripcion": "",
            "fotoEstadio": "", "camisetas": [], "fotos": {}, "apodo": "", "dt": "", "wikipedia": ""}
     with ThreadPoolExecutor(max_workers=2) as ex:
-        f_wiki = ex.submit(datos_wiki, nombres)
+        f_wiki = ex.submit(datos_wiki, nombres, pais)
         extra = buscar_equipo_tsdb(nombres)
         venue, kits, jugadores = {}, [], []
         if extra:
@@ -1137,9 +1205,7 @@ def datos_club_extra(id_equipo):
                 fotos_kit[tipo] = {"tipo": tipo, "imagen": k["strEquipment"]}
     dibujos = {k["tipo"]: k for k in w.get("camisetas", [])}
     if not dibujos and not fotos_kit:
-        colores = [extra.get("strColour1"), extra.get("strColour2"), extra.get("strColour3")]
-        if not any(colores):
-            colores = [_color_nombre(c) for c in re.split(r"\s*/\s*|\s+y\s+|\s*,\s*", t.get("clubColors") or "")]
+        colores = [_color_nombre(c) for c in re.split(r"\s*/\s*|\s+y\s+|\s*,\s*", t.get("clubColors") or "")]
         dibujos = {k["tipo"]: k for k in kits_por_colores(colores)}
     for tipo in ("Titular", "Suplente", "Alternativa"):
         k = fotos_kit.get(tipo) or dibujos.get(tipo)
@@ -1625,6 +1691,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .camisetas figure:has(.kit) { background:#fff; } .camisetas figure:has(.kit) figcaption { color:#3A4658; }
 .kit-svg { width:100%; height:110px; display:block; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
+.kit.pix > div img { image-rendering:pixelated; }
 .kit .la { left:0; top:0; width:31px; height:59px; } .kit .b { left:31px; top:0; width:38px; height:59px; }
 .kit .ra { left:69px; top:0; width:31px; height:59px; } .kit .sh { left:0; top:59px; width:100px; height:36px; }
 .kit .so { left:0; top:95px; width:100px; height:40px; }
@@ -2204,7 +2271,21 @@ function dibujarClub(c) {
 /* ---------- Camiseta dibujada como en Wikipedia: colores de fondo + el diseño encima ---------- */
 const WIKI_ARCH = { la: 'Kit_left_arm', b: 'Kit_body', ra: 'Kit_right_arm', sh: 'Kit_shorts', so: 'Kit_socks' };
 const WIKI_COLOR = { la: 'leftarm', b: 'body', ra: 'rightarm', sh: 'shorts', so: 'socks' };
+// Medidas de cada parte en Wikipedia (si la página no las trae)
+const KIT_POS = { la:{left:0,top:0,width:31,height:59}, b:{left:31,top:0,width:38,height:59}, ra:{left:69,top:0,width:31,height:59},
+                  sh:{left:0,top:59,width:100,height:36}, so:{left:0,top:95,width:100,height:40} };
+function camisetaWiki(k) {
+  let alto = 0;
+  const partes = Object.keys(KIT_POS).filter(p => k.partes[p]).map(p => {
+    const x = k.partes[p], q = Object.assign({}, KIT_POS[p], x.pos || {});
+    alto = Math.max(alto, q.top + q.height);
+    const fondo = /^#[0-9a-f]{3,8}$|^[a-z]{3,20}$|^rgb\([\d,\s]+\)$/i.test(x.color || '') ? x.color : 'transparent';
+    return `<div style="left:${q.left}px;top:${q.top}px;width:${q.width}px;height:${q.height}px;background:${fondo}"><img src="${esc(x.img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()"></div>`;
+  }).join('');
+  return `<div class="kit pix" role="img" aria-label="Camiseta ${esc(k.tipo)}" style="height:${alto || 135}px">${partes}</div>`;
+}
 function camisetaDibujo(k) {
+  if (k.partes) return camisetaWiki(k);
   const color = (v) => /^#[0-9a-f]{3,6}$|^[a-z]{3,20}$/i.test(v || '') ? v : '#888';
   if (!Object.values(k.dibujo || {}).some(Boolean)) return camisetaSVG(k);  // lisa: dibujo propio
   return `<div class="kit" role="img" aria-label="Camiseta ${esc(k.tipo)}" data-kit="${esc(JSON.stringify(k))}">${Object.keys(WIKI_ARCH).map(p => {
