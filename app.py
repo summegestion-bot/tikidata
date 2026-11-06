@@ -292,11 +292,25 @@ def datos_equipos(liga):
     return {"liga": liga, "equipos": lista}
 
 
+def proximos_fd(id_equipo, cantidad=5):
+    """Próximos partidos de verdad: solo desde hoy en adelante, ordenados por fecha."""
+    hoy = datetime.now(ARG).date()
+    try:
+        datos = api(f"/teams/{id_equipo}/matches?dateFrom={hoy.isoformat()}&dateTo={(hoy + timedelta(days=120)).isoformat()}", ttl=900)
+    except Exception:
+        datos = api(f"/teams/{id_equipo}/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED", ttl=900)
+    limite = time.time() - 3 * 3600
+    lista = [m for m in datos.get("matches", [])
+             if m.get("status") in ("SCHEDULED", "TIMED", "IN_PLAY", "PAUSED")
+             and a_hora_arg(m["utcDate"]).timestamp() > limite]
+    lista.sort(key=lambda m: m["utcDate"])
+    return [partido(m) for m in lista[:cantidad]]
+
+
 def datos_proximos(id_equipo):
     if str(id_equipo).startswith("h"):
         return {"partidos": proximos_hl(str(id_equipo), 3)}
-    datos = api(f"/teams/{id_equipo}/matches?status=SCHEDULED,TIMED,IN_PLAY,PAUSED&limit=3", ttl=900)
-    return {"partidos": [partido(p) for p in datos.get("matches", [])]}
+    return {"partidos": proximos_fd(id_equipo, 3)}
 
 
 # ---------------------------------------------------------------------------
@@ -716,7 +730,8 @@ def proximos_hl(id_txt, cantidad=5):
     lista = []
     for c in HL_LIGAS:
         try:
-            lista += [p for p in hl_temporada(c) if not p["terminado"] and p["_inicio"] > ahora - 7200
+            lista += [p for p in hl_temporada(c) if not p["terminado"] and p["_inicio"] > ahora - 3 * 3600
+                      and p["estado"] in ("TIMED", "IN_PLAY", "PAUSED")
                       and id_txt in (p["local"]["id"], p["visitante"]["id"])]
         except Exception:
             continue
@@ -870,6 +885,150 @@ def buscar_equipo_tsdb(nombres):
     return {}
 
 
+
+# ---------------------------------------------------------------------------
+# Wikipedia: datos del club, foto del estadio y los colores de las camisetas
+# (como las dibuja Wikipedia). Sirve para todos los clubes, sobre todo los argentinos.
+# ---------------------------------------------------------------------------
+WIKI_AGENTE = "TikiData/1.0 (https://tikidata.onrender.com; app de futbol)"
+FICHAS = {"es": "Ficha de equipo de fútbol", "en": "Infobox football club"}
+NO_ES_EL_CLUB = ["femenino", "women", "reserva", "baloncesto", "basketball", "futsal", "fútbol sala", "voleibol",
+                 "balonmano", "rugby", "hockey", "anexo", "historia de", "temporada", "season", "sub-", "u-2", "u2", "ii)", " b)"]
+PARTES_KIT = ["la", "b", "ra", "sh", "so"]
+COLORES_KIT = ["leftarm", "body", "rightarm", "shorts", "socks"]
+
+
+def wiki(idioma, params, ttl=7 * 86400):
+    clave = "wiki" + idioma + json.dumps(params, sort_keys=True)
+    ahora = time.time()
+    if clave in _memoria and ahora - _memoria[clave][0] < ttl:
+        return _memoria[clave][1]
+    try:
+        r = requests.get(f"https://{idioma}.wikipedia.org/w/api.php", timeout=6, headers={"User-Agent": WIKI_AGENTE},
+                         params=dict(params, format="json", formatversion=2))
+        datos = r.json() if r.status_code == 200 else {}
+    except Exception:
+        return {}
+    _memoria[clave] = (ahora, datos)
+    return datos
+
+
+def _ficha(texto, nombre_ficha):
+    """Recorta la ficha (el cuadro de la derecha) del texto de la página."""
+    m = re.search(r"\{\{\s*(?:" + re.escape(nombre_ficha) + r"|Infobox football club|Ficha de club deportivo)", texto, re.I)
+    if not m:
+        return ""
+    nivel, i = 0, m.start()
+    while i < len(texto) - 1:
+        par = texto[i:i + 2]
+        if par == "{{":
+            nivel += 1
+            i += 2
+            continue
+        if par == "}}":
+            nivel -= 1
+            i += 2
+            if nivel == 0:
+                return texto[m.start():i]
+            continue
+        i += 1
+    return texto[m.start():]
+
+
+def _campo(ficha, *nombres):
+    for n in nombres:
+        m = re.search(r"\n\s*\|\s*" + re.escape(n) + r"\s*=([^\n]*)", ficha, re.I)
+        if m and m.group(1).strip():
+            return m.group(1).strip()
+    return ""
+
+
+def _limpio(v):
+    v = re.sub(r"<ref[^>]*/>|<ref[^>]*>.*?</ref>", "", v or "", flags=re.S)
+    v = re.sub(r"<br\s*/?>", ", ", v)
+    v = re.sub(r"<[^>]+>", "", v)
+    v = re.sub(r"\[\[(?:Archivo|File|Imagen|Image):[^\]]*\]\]", "", v, flags=re.I)
+    v = re.sub(r"\[\[(?:[^\]|]*\|)?([^\]]*)\]\]", r"\1", v)
+    v = re.sub(r"\{\{(?:bandera|flagicon|flag|bandera2)[^}]*\}\}", "", v, flags=re.I)
+    v = re.sub(r"\{\{(?:fecha de inicio|start date|fecha)\|([^{}]*)\}\}", lambda m: " ".join(m.group(1).split("|")), v, flags=re.I)
+    v = re.sub(r"\{\{[^{}|]*\|([^{}|]*)[^{}]*\}\}", r"\1", v)
+    v = re.sub(r"\{\{[^}]*\}\}", "", v).replace("'''", "").replace("''", "")
+    return re.sub(r"\s+", " ", v).strip(" ,;")
+
+
+def _color(v):
+    v = _limpio(v).lstrip("#").strip()
+    if re.fullmatch(r"[0-9A-Fa-f]{6}|[0-9A-Fa-f]{3}", v):
+        return "#" + v
+    return v.lower() if re.fullmatch(r"[A-Za-z]{3,20}", v) else ""
+
+
+def _camisetas_wiki(ficha):
+    kits = []
+    for n, tipo in (("1", "Titular"), ("2", "Suplente"), ("3", "Alternativa")):
+        colores = {c: _color(_campo(ficha, c + n)) for c in COLORES_KIT}
+        if not colores["body"]:
+            continue
+        dibujo = {p: re.sub(r"[^\w\-.]", "", _limpio(_campo(ficha, "pattern_" + p + n)))[:60] for p in PARTES_KIT}
+        kits.append({"tipo": tipo, "colores": colores, "dibujo": dibujo})
+    return kits
+
+
+def _buscar_pagina(idioma, nombres):
+    for n in nombres:
+        n = (n or "").strip()
+        if not n:
+            continue
+        d = wiki(idioma, {"action": "query", "list": "search", "srlimit": 6,
+                          "srsearch": f'{n} hastemplate:"{FICHAS[idioma]}"'})
+        for r in ((d.get("query") or {}).get("search") or []):
+            t = r.get("title", "")
+            if not any(x in t.lower() for x in NO_ES_EL_CLUB):
+                return t
+    return ""
+
+
+def datos_wiki(nombres):
+    """Busca el club en Wikipedia (primero en español) y devuelve sus datos."""
+    for idioma in ("es", "en"):
+        titulo = _buscar_pagina(idioma, nombres)
+        if not titulo:
+            continue
+        d = wiki(idioma, {"action": "query", "titles": titulo, "redirects": 1,
+                          "prop": "revisions|extracts", "rvprop": "content", "rvslots": "main",
+                          "exintro": 1, "explaintext": 1, "exsentences": 6})
+        paginas = (d.get("query") or {}).get("pages") or []
+        if not paginas or "revisions" not in paginas[0]:
+            continue
+        texto = paginas[0]["revisions"][0].get("slots", {}).get("main", {}).get("content", "")
+        ficha = _ficha(texto, FICHAS[idioma])
+        if not ficha:
+            continue
+        estadio_crudo = _campo(ficha, "estadio", "ground")
+        enlace = re.search(r"\[\[([^\]|#]+)", estadio_crudo)
+        capacidad = re.search(r"\d[\d.,\s]{2,9}\d", _limpio(_campo(ficha, "capacidad", "capacity")))
+        fundacion = re.search(r"\b(?:18|19|20)\d{2}\b", _limpio(_campo(ficha, "fundación", "fundacion", "founded")))
+        res = {
+            "idioma": idioma, "pagina": f"https://{idioma}.wikipedia.org/wiki/" + titulo.replace(" ", "_"),
+            "estadio": _limpio(estadio_crudo).split(",")[0][:80],
+            "capacidad": int(re.sub(r"\D", "", capacidad.group(0))) if capacidad else None,
+            "fundacion": int(fundacion.group(0)) if fundacion else None,
+            "ubicacion": _limpio(_campo(ficha, "ubicación", "ubicacion", "ciudad", "location"))[:80],
+            "apodo": _limpio(_campo(ficha, "apodo", "apodos", "nickname"))[:80],
+            "dt": _limpio(_campo(ficha, "entrenador", "manager", "head_coach", "coach"))[:60],
+            "descripcion": (paginas[0].get("extract") or "")[:700] if idioma == "es" else "",
+            "camisetas": _camisetas_wiki(ficha), "fotoEstadio": "",
+        }
+        if enlace:  # foto del estadio: la imagen principal de la página del estadio
+            e = wiki(idioma, {"action": "query", "titles": enlace.group(1).strip(), "redirects": 1,
+                              "prop": "pageimages", "piprop": "thumbnail", "pithumbsize": 1200})
+            pe = (e.get("query") or {}).get("pages") or []
+            if pe and pe[0].get("thumbnail"):
+                res["fotoEstadio"] = pe[0]["thumbnail"]["source"]
+        return res
+    return {}
+
+
 def datos_club(id_equipo):
     """Datos básicos del club: salen rápido (football-data.org)."""
     if str(id_equipo).startswith("h"):
@@ -891,62 +1050,105 @@ def datos_club(id_equipo):
         "capacidad": None, "ubicacion": "", "fotoEstadio": "", "camisetas": [], "descripcion": "",
     }
     try:
-        prox = api(f"/teams/{id_equipo}/matches?status=SCHEDULED,TIMED&limit=5", ttl=900)
-        club["proximos"] = [partido(p) for p in prox.get("matches", [])][:5]
+        club["proximos"] = proximos_fd(id_equipo, 5)
     except Exception:
         club["proximos"] = []
     return club
 
 
+COLORES_EN = {"claret": "#7A263A", "skyblue": "#6CABDD", "lightblue": "#8CC8F0", "royalblue": "#2350A0",
+              "navyblue": "#13235B", "navy": "#13235B", "burgundy": "#800020", "bordeaux": "#800020", "maroon": "#7B1E2B",
+              "gold": "#E8B923", "amber": "#FFBF00", "sky": "#6CABDD", "celeste": "#75AADB", "azul": "#1F4FA0",
+              "rojo": "#D32027", "blanco": "#FFFFFF", "negro": "#111111", "amarillo": "#F6D200", "verde": "#1B8A3C",
+              "grana": "#7A1F2B", "bordo": "#800020", "naranja": "#F27C21", "violeta": "#5B2C83"}
+
+
+def _color_nombre(n):
+    n = re.sub(r"[^a-z]", "", (n or "").lower())
+    return COLORES_EN.get(n) or (n if 3 <= len(n) <= 20 else "")
+
+
+def kits_por_colores(colores):
+    """Si no hay foto ni datos de Wikipedia: camisetas lisas con los colores del club."""
+    c = [x for x in colores if x][:3]
+    if not c:
+        return []
+    c1, c2 = c[0], (c[1] if len(c) > 1 else "#FFFFFF")
+    def kit(cuerpo, pantalon, medias):
+        return {"leftarm": cuerpo, "body": cuerpo, "rightarm": cuerpo, "shorts": pantalon, "socks": medias}
+    sin_dibujo = {p: "" for p in PARTES_KIT}
+    return [{"tipo": "Titular", "colores": kit(c1, c2, c1), "dibujo": sin_dibujo, "aprox": True},
+            {"tipo": "Suplente", "colores": kit(c2, c1, c2), "dibujo": sin_dibujo, "aprox": True}]
+
+
+def _temporada_actual(texto):
+    anios = [int(a) for a in re.findall(r"(?:19|20)\d{2}", texto or "")]
+    return bool(anios) and max(anios) >= datetime.now(ARG).year - 1
+
+
 def datos_club_extra(id_equipo):
-    """Lo que viene de TheSportsDB: estadio, foto, camisetas, historia y caras. Se carga después."""
+    """Estadio, foto, camisetas e historia: TheSportsDB + Wikipedia. Se carga después."""
     from concurrent.futures import ThreadPoolExecutor
     if str(id_equipo).startswith("h"):
         n = hl_equipo(str(id_equipo))["nombre"]
         t = {"shortName": n, "name": n, "squad": None}
     else:
         t = api(f"/teams/{id_equipo}", ttl=86400)
+    nombres = [t.get("shortName"), t.get("name")]
     res = {"capacidad": None, "ubicacion": "", "fundacion": None, "estadio": "", "descripcion": "",
-           "fotoEstadio": "", "camisetas": [], "fotos": {}}
-    extra = buscar_equipo_tsdb([t.get("shortName"), t.get("name")])
-    if not extra:
-        return res
-    res.update(capacidad=extra.get("intStadiumCapacity"), ubicacion=extra.get("strLocation") or "",
-               fundacion=extra.get("intFormedYear"), estadio=extra.get("strStadium") or "",
-               descripcion=(extra.get("strDescriptionES") or extra.get("strDescriptionEN") or "")[:600],
-               fotoEstadio=extra.get("strStadiumThumb") or "")
-    id_t, id_v = extra.get("idTeam"), extra.get("idVenue")
-    with ThreadPoolExecutor(max_workers=3) as ex:
-        f_venue = ex.submit(tsdb, f"/lookupvenue.php?id={id_v}") if id_v else None
-        f_kits = ex.submit(tsdb, f"/lookupequipment.php?id={id_t}") if id_t else None
-        f_jug = ex.submit(tsdb, f"/lookup_all_players.php?id={id_t}") if id_t else None
-        venue = (primera_lista(f_venue.result()) or [{}])[0] if f_venue else {}
-        kits = primera_lista(f_kits.result()) if f_kits else []
-        jugadores = primera_lista(f_jug.result()) if f_jug else []
-    res["fotoEstadio"] = venue.get("strThumb") or venue.get("strFanart1") or res["fotoEstadio"] or extra.get("strFanart1") or ""
-    res["capacidad"] = res["capacidad"] or venue.get("intCapacity")
-    res["ubicacion"] = res["ubicacion"] or venue.get("strLocation") or ""
-    kits = sorted(kits, key=lambda k: k.get("strSeason") or "", reverse=True)
+           "fotoEstadio": "", "camisetas": [], "fotos": {}, "apodo": "", "dt": "", "wikipedia": ""}
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_wiki = ex.submit(datos_wiki, nombres)
+        extra = buscar_equipo_tsdb(nombres)
+        venue, kits, jugadores = {}, [], []
+        if extra:
+            id_t, id_v = extra.get("idTeam"), extra.get("idVenue")
+            with ThreadPoolExecutor(max_workers=3) as ex2:
+                f_venue = ex2.submit(tsdb, f"/lookupvenue.php?id={id_v}") if id_v else None
+                f_kits = ex2.submit(tsdb, f"/lookupequipment.php?id={id_t}") if id_t else None
+                f_jug = ex2.submit(tsdb, f"/lookup_all_players.php?id={id_t}") if id_t and t.get("squad") is None else None
+                venue = (primera_lista(f_venue.result()) or [{}])[0] if f_venue else {}
+                kits = primera_lista(f_kits.result()) if f_kits else []
+                jugadores = primera_lista(f_jug.result()) if f_jug else []
+        try:
+            w = f_wiki.result(timeout=20) or {}
+        except Exception:
+            w = {}
+    extra = extra or {}
+    # Datos: Wikipedia en español primero (nombres en castellano), si no TheSportsDB
+    es = w.get("idioma") == "es"
+    res["estadio"] = (w.get("estadio") if es else "") or extra.get("strStadium") or w.get("estadio") or ""
+    res["ubicacion"] = (w.get("ubicacion") if es else "") or extra.get("strLocation") or venue.get("strLocation") or w.get("ubicacion") or ""
+    res["capacidad"] = extra.get("intStadiumCapacity") or venue.get("intCapacity") or w.get("capacidad")
+    res["fundacion"] = extra.get("intFormedYear") or w.get("fundacion")
+    res["apodo"], res["dt"], res["wikipedia"] = w.get("apodo", ""), w.get("dt", ""), w.get("pagina", "")
+    res["descripcion"] = (w.get("descripcion") or extra.get("strDescriptionES") or extra.get("strDescriptionEN") or "")[:700]
+    res["fotoEstadio"] = (venue.get("strThumb") or extra.get("strStadiumThumb") or w.get("fotoEstadio")
+                          or venue.get("strFanart1") or extra.get("strFanart1") or "")
+    # Camisetas: foto real de esta temporada si hay; si no, el dibujo de Wikipedia; si no, los colores del club
     tipos = {"1st": "Titular", "2nd": "Suplente", "3rd": "Alternativa"}
+    kits = sorted(kits, key=lambda k: k.get("strSeason") or "", reverse=True)
     temporada = kits[0].get("strSeason") if kits else None
-    for k in kits:
-        if k.get("strSeason") == temporada and k.get("strEquipment") and len(res["camisetas"]) < 3:
-            res["camisetas"].append({"tipo": tipos.get(k.get("strType"), k.get("strType") or ""), "imagen": k["strEquipment"]})
-    if not res["camisetas"] and extra.get("strEquipment"):
-        res["camisetas"].append({"tipo": "Titular", "imagen": extra["strEquipment"]})
-    por_nombre = {}
-    for jp in jugadores:
-        f = jp.get("strCutout") or jp.get("strThumb") or ""
-        if f and jp.get("strPlayer"):
-            por_nombre[normalizar(jp["strPlayer"])] = f
-    for j in (t.get("squad") or []):
-        f = por_nombre.get(normalizar(j.get("name", "")))
-        if f:
-            res["fotos"][j.get("name", "")] = f
+    fotos_kit = {}
+    if temporada and _temporada_actual(temporada):
+        for k in kits:
+            tipo = tipos.get(k.get("strType"), "")
+            if k.get("strSeason") == temporada and k.get("strEquipment") and tipo and tipo not in fotos_kit:
+                fotos_kit[tipo] = {"tipo": tipo, "imagen": k["strEquipment"]}
+    dibujos = {k["tipo"]: k for k in w.get("camisetas", [])}
+    if not dibujos and not fotos_kit:
+        colores = [extra.get("strColour1"), extra.get("strColour2"), extra.get("strColour3")]
+        if not any(colores):
+            colores = [_color_nombre(c) for c in re.split(r"\s*/\s*|\s+y\s+|\s*,\s*", t.get("clubColors") or "")]
+        dibujos = {k["tipo"]: k for k in kits_por_colores(colores)}
+    for tipo in ("Titular", "Suplente", "Alternativa"):
+        k = fotos_kit.get(tipo) or dibujos.get(tipo)
+        if k:
+            res["camisetas"].append(k)
     if t.get("squad") is None:  # equipos de Highlightly: plantel desde TheSportsDB
         res["plantel"] = [{"id": jp.get("idPlayer"), "nombre": jp.get("strPlayer") or "", "posicion": jp.get("strPosition") or "",
                            "nacimiento": jp.get("dateBorn") or "", "nacionalidad": jp.get("strNationality") or "",
-                           "foto": jp.get("strCutout") or jp.get("strThumb") or ""} for jp in jugadores if jp.get("strPlayer")]
+                           "foto": ""} for jp in jugadores if jp.get("strPlayer")]
     return res
 
 
@@ -1418,6 +1620,15 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .camisetas figure { margin:0; background:var(--sup); border-radius:12px; padding:10px; text-align:center; }
 .camisetas img { width:100%; height:110px; object-fit:contain; }
 .camisetas figcaption { font-size:12px; font-weight:700; color:var(--suave); margin-top:6px; }
+.kit { position:relative; width:100px; height:135px; margin:0 auto; transform:scale(.82); transform-origin:top center; margin-bottom:-24px; }
+.kit > div { position:absolute; overflow:hidden; }
+.camisetas figure:has(.kit) { background:#fff; } .camisetas figure:has(.kit) figcaption { color:#3A4658; }
+.kit-svg { width:100%; height:110px; display:block; }
+.kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
+.kit .la { left:0; top:0; width:31px; height:59px; } .kit .b { left:31px; top:0; width:38px; height:59px; }
+.kit .ra { left:69px; top:0; width:31px; height:59px; } .kit .sh { left:0; top:59px; width:100px; height:36px; }
+.kit .so { left:0; top:95px; width:100px; height:40px; }
+.camisetas .aprox { display:block; font-size:10px; font-weight:600; color:#5B6B82; margin-top:2px; }
 .foto-jug { width:96px; height:96px; border-radius:48px; object-fit:cover; object-position:top; background:linear-gradient(#1B2E4F, #0D1626); border:2px solid var(--azulreal); flex:none; }
 .video { display:block; border-radius:16px; overflow:hidden; background:var(--tarj); border:1px solid var(--linea); }
 .portada-video { position:relative; aspect-ratio:16/9; background:#000; }
@@ -1601,8 +1812,8 @@ async function vistaInicio(fecha) {
 }
 async function cargarProximosFavs(favs) {
   const filas = [];
-  for (const f of favs.slice(0, 3)) {
-    try { const d = await pedir('/api/proximos?equipo=' + f.id); if (d.partidos[0]) filas.push(d.partidos[0]); } catch (e) {}
+  for (const f of favs.slice(0, 5)) {
+    try { const d = await pedir('/api/proximos?equipo=' + f.id); const p = d.partidos.find(x => x.fecha >= hoyISO()); if (p && !filas.some(x => x.id === p.id)) filas.push(p); } catch (e) {}
   }
   filas.sort((a, b) => (a.fecha + a.hora).localeCompare(b.fecha + b.hora));
   const el = $('proxFavs'); if (!el) return;
@@ -1956,8 +2167,8 @@ async function vistaClub(id) {
     if (location.hash !== '#/club/' + id) return;
     Object.entries(x.fotos || {}).forEach(([n, f]) => { FOTOS[n] = f; });
     if (x.plantel && x.plantel.length && !c.plantel.length) c.plantel = x.plantel;
-    ['capacidad', 'ubicacion', 'fotoEstadio', 'camisetas', 'descripcion'].forEach(k => { if (x[k] && (!Array.isArray(x[k]) || x[k].length)) c[k] = x[k]; });
-    c.fundacion = c.fundacion || x.fundacion; c.estadio = c.estadio || x.estadio;
+    ['capacidad', 'ubicacion', 'fotoEstadio', 'camisetas', 'descripcion', 'apodo', 'wikipedia'].forEach(k => { if (x[k] && (!Array.isArray(x[k]) || x[k].length)) c[k] = x[k]; });
+    c.fundacion = c.fundacion || x.fundacion; c.estadio = c.estadio || x.estadio; c.dt = c.dt || x.dt;
     const y = window.scrollY; dibujarClub(c); window.scrollTo(0, y);
   }).catch(() => {});
 }
@@ -1975,74 +2186,69 @@ function dibujarClub(c) {
     <main>
       <section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">Datos del club</h2><div class="datos3">
         ${dato('Fundación', c.fundacion)}${dato('Estadio', c.estadio)}${dato('Capacidad', c.capacidad ? Number(c.capacidad).toLocaleString('es-AR') + ' personas' : '')}
-        ${dato('Ubicación', c.ubicacion || c.direccion)}${dato('Colores', c.colores)}${dato('Director técnico', c.dt)}</div>
-        ${c.web ? `<a class="link" href="${esc(c.web)}" target="_blank" rel="noopener">Sitio oficial ↗</a>` : ''}</section>
+        ${dato('Ubicación', c.ubicacion || c.direccion)}${dato('Apodo', c.apodo)}${dato('Colores', c.colores)}${dato('Director técnico', c.dt)}</div>
+        <div style="display:flex;gap:16px;flex-wrap:wrap">${c.web ? `<a class="link" href="${esc(c.web)}" target="_blank" rel="noopener">Sitio oficial ↗</a>` : ''}${c.wikipedia ? `<a class="link" href="${esc(c.wikipedia)}" target="_blank" rel="noopener">Wikipedia ↗</a>` : ''}</div></section>
       ${c.camisetas.length ? `<section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">Camisetas</h2>
-        <div class="camisetas">${c.camisetas.map(k => `<figure><img src="${esc(k.imagen)}" alt="Camiseta ${esc(k.tipo)}" loading="lazy"><figcaption>${esc(k.tipo)}</figcaption></figure>`).join('')}</div></section>` : ''}
+        <div class="camisetas">${c.camisetas.map(k => `<figure>${k.imagen ? `<img src="${esc(k.imagen)}" alt="Camiseta ${esc(k.tipo)}" loading="lazy">` : camisetaDibujo(k)}<figcaption>${esc(k.tipo)}${k.aprox ? '<span class="aprox">Colores del club</span>' : ''}</figcaption></figure>`).join('')}</div></section>` : ''}
       <section class="tarjeta"><div class="cab"><div class="t"><b>Próximos partidos</b><small>Los próximos ${c.proximos.length || 5}</small></div></div>
         ${c.proximos.length ? c.proximos.map(p => { const d = new Date(p.fecha + 'T12:00:00'); return `<div style="padding:8px 12px 0;font-size:11px;font-weight:700;color:var(--suave)">${DIAS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1} · ${esc(p.ligaNombre)}</div>` + filaPartido(p); }).join('') : '<div class="aviso">No hay partidos programados.</div>'}</section>
       ${c.plantel.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Plantel actual</b><small>${c.plantel.length} jugadores</small></div></div>
         ${orden.filter(g => grupos[g]).map(g => `<div style="padding:10px 12px 2px;font-size:11px;font-weight:800;letter-spacing:.6px;color:var(--suave)">${g.toUpperCase()}</div>` +
           grupos[g].map(j => `<a class="jug" style="grid-template-columns:40px 1fr auto" href="#/ficha/${encodeURIComponent(j.nombre)}">${caraHTML(j)}<span><b style="font-size:14px">${esc(j.nombre)}</b><br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small></span><small style="color:var(--suave)">${edad(j.nacimiento)}</small></a>`).join('')).join('')}</section>` : ''}
       ${c.descripcion ? `<section class="tarjeta pad"><h2 style="margin:0 0 8px;font-size:15px">Historia</h2><p style="margin:0;font-size:13px;line-height:1.55;color:#C7D2E0">${esc(c.descripcion)}…</p></section>` : ''}
-      <p class="nota-pie">Datos de football-data.org y TheSportsDB.</p>
+      <p class="nota-pie">Datos de football-data.org, Highlightly, TheSportsDB y Wikipedia.</p>
     </main>`;
   c.plantel.forEach(j => { if (j.foto) FOTOS[j.nombre] = j.foto; });
   cargarFotos($('vista'));
 }
+/* ---------- Camiseta dibujada como en Wikipedia: colores de fondo + el diseño encima ---------- */
+const WIKI_ARCH = { la: 'Kit_left_arm', b: 'Kit_body', ra: 'Kit_right_arm', sh: 'Kit_shorts', so: 'Kit_socks' };
+const WIKI_COLOR = { la: 'leftarm', b: 'body', ra: 'rightarm', sh: 'shorts', so: 'socks' };
+function camisetaDibujo(k) {
+  const color = (v) => /^#[0-9a-f]{3,6}$|^[a-z]{3,20}$/i.test(v || '') ? v : '#888';
+  if (!Object.values(k.dibujo || {}).some(Boolean)) return camisetaSVG(k);  // lisa: dibujo propio
+  return `<div class="kit" role="img" aria-label="Camiseta ${esc(k.tipo)}" data-kit="${esc(JSON.stringify(k))}">${Object.keys(WIKI_ARCH).map(p => {
+    const dib = (k.dibujo || {})[p] || '';
+    const base = WIKI_ARCH[p] + (p === 'so' ? '_long' : '') + '.svg';
+    const opciones = dib ? ['es', 'en'].map(w => `https://${w}.wikipedia.org/wiki/Special:FilePath/${WIKI_ARCH[p]}${dib}.png`) : [];
+    opciones.push('https://en.wikipedia.org/wiki/Special:FilePath/' + base);
+    return `<div class="${p}" style="background:${color(k.colores[WIKI_COLOR[p]])}"><img src="${esc(opciones[0])}" data-alt="${esc(opciones.slice(1).join('|'))}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="kitFalla(this)"></div>`;
+  }).join('')}</div>`;
+}
+// Camiseta dibujada por nosotros (si Wikipedia no tiene el diseño o no carga)
+function camisetaSVG(k) {
+  const c = (n) => { const v = (k.colores || {})[n]; return /^#[0-9a-f]{3,6}$|^[a-z]{3,20}$/i.test(v || '') ? v : '#888'; };
+  const borde = 'stroke="rgba(0,0,0,.35)" stroke-width="1.2" stroke-linejoin="round"';
+  return `<svg class="kit-svg" viewBox="0 0 100 135" role="img" aria-label="Camiseta ${esc(k.tipo)}">
+    <polygon points="31,8 20,6 2,24 12,40 31,30" fill="${c('leftarm')}" ${borde}/>
+    <polygon points="69,8 80,6 98,24 88,40 69,30" fill="${c('rightarm')}" ${borde}/>
+    <path d="M31,8 L41,3 Q50,11 59,3 L69,8 L69,62 L31,62 Z" fill="${c('body')}" ${borde}/>
+    <path d="M41,3 Q50,11 59,3" fill="none" stroke="rgba(0,0,0,.35)" stroke-width="2"/>
+    <polygon points="29,64 71,64 75,95 54,95 50,82 46,95 25,95" fill="${c('shorts')}" ${borde}/>
+    <rect x="30" y="99" width="14" height="32" rx="3" fill="${c('socks')}" ${borde}/>
+    <rect x="56" y="99" width="14" height="32" rx="3" fill="${c('socks')}" ${borde}/></svg>`;
+}
+function kitFalla(img) {
+  const resto = (img.dataset.alt || '').split('|').filter(Boolean);
+  if (!resto.length) {
+    const kit = img.closest('.kit');
+    if (kit && !kit.dataset.cambiado) { kit.dataset.cambiado = 1; try { kit.outerHTML = camisetaSVG(JSON.parse(kit.dataset.kit)); } catch (e) {} }
+    else img.remove();
+    return;
+  }
+  img.dataset.alt = resto.slice(1).join('|'); img.src = resto[0];
+}
 /* ---------- Caras de los jugadores ---------- */
 const FOTOS = {};
-// Versión chica de la foto (pesa mucho menos). Si no existe, usa la original.
-function fotoChica(f) { return /thesportsdb\.com/.test(f) && !/\/(tiny|small|preview)$/.test(f) ? f + '/small' : f; }
-function imgCara(f, cls) {
-  return `<img class="${cls} con-foto" src="${esc(fotoChica(f))}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer" onerror="if(!this.dataset.o){this.dataset.o=1;this.src='${esc(f)}'}">`;
-}
-function caraHTML(j, cls = 'avatar') {
-  const f = FOTOS[j.nombre] || j.foto;
-  return f ? imgCara(f, cls) : `<span class="${cls}" data-foto="${esc(j.nombre)}">${iniciales(j.nombre)}</span>`;
-}
-const vigia = 'IntersectionObserver' in window ? new IntersectionObserver((entradas) => {
-  entradas.forEach(e => { if (e.isIntersecting) { vigia.unobserve(e.target); buscarCara(e.target.dataset.foto); } });
-}, { rootMargin: '300px' }) : null;
-const colaCaras = []; let buscando = 0;
-function buscarCara(n) {
-  if (!n || n in FOTOS || colaCaras.includes(n)) return;
-  colaCaras.push(n); siguienteCara();
-}
-async function siguienteCara() {
-  while (buscando < 3 && colaCaras.length) {
-    const n = colaCaras.shift(); buscando++;
-    pedir('/api/foto?nombre=' + encodeURIComponent(n)).then(r => { FOTOS[n] = r.foto || ''; }).catch(() => { FOTOS[n] = ''; }).finally(() => {
-      buscando--;
-      if (FOTOS[n]) document.querySelectorAll('[data-foto]').forEach(el => { if (el.dataset.foto === n) el.outerHTML = imgCara(FOTOS[n], el.className); });
-      siguienteCara();
-    });
-  }
-}
-async function cargarFotos(raiz, alTerminar) {
-  if (vigia) { raiz.querySelectorAll('[data-foto]').forEach(el => vigia.observe(el)); return; }
-  const pendientes = [...new Set([...raiz.querySelectorAll('[data-foto]')].map(e => e.dataset.foto))].filter(n => !(n in FOTOS));
-  let i = 0, cambios = 0;
-  const trabajador = async () => {
-    while (i < pendientes.length) {
-      const n = pendientes[i++];
-      try { const r = await pedir('/api/foto?nombre=' + encodeURIComponent(n)); FOTOS[n] = r.foto || ''; } catch (e) { FOTOS[n] = ''; }
-      if (FOTOS[n]) {
-        cambios++;
-        raiz.querySelectorAll('[data-foto]').forEach(el => { if (el.dataset.foto === n) el.outerHTML = imgCara(FOTOS[n], el.className); });
-      }
-    }
-  };
-  await Promise.all([trabajador(), trabajador(), trabajador()]);
-  if (cambios && alTerminar) alTerminar();
-}
+// Sin caras: cada jugador se muestra con un círculo con sus iniciales (más rápido)
+function caraHTML(j, cls = 'avatar') { return `<span class="${cls}">${iniciales(j.nombre)}</span>`; }
+function cargarFotos() {}
 /* ---------- Ficha extendida de un jugador: foto, datos y clubes anteriores ---------- */
 async function bloqueJugadorExtra(nombre, destino) {
   const el = $(destino); if (!el) return;
   try {
     const x = await pedir('/api/jugador_extra?nombre=' + encodeURIComponent(nombre));
     if (!x.encontrado) { el.innerHTML = '<p class="nota-pie">No encontramos más información de este jugador.</p>'; return; }
-    if (x.foto) { const av = document.querySelector('.avatar.xl'); if (av) av.outerHTML = `<img class="foto-jug" src="${esc(/thesportsdb\.com/.test(x.foto) ? x.foto + '/medium' : x.foto)}" alt="Foto de ${esc(x.nombre)}" referrerpolicy="no-referrer" onerror="if(!this.dataset.o){this.dataset.o=1;this.src='${esc(x.foto)}'}">`; }
     const fila = (t, v) => v ? `<div><small>${t}</small><b>${esc(v)}</b></div>` : '';
     el.innerHTML = `<section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">Más datos</h2><div class="datos3">
         ${fila('Altura', x.altura)}${fila('Número', x.numero)}${fila('Posición', x.posicion)}${fila('Club actual', x.equipo)}</div></section>
