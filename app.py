@@ -55,25 +55,27 @@ LIGAS = {
 # Noticias: portales que publican sus titulares en formato RSS.
 # Si alguno no responde, se saltea solo. Se pueden agregar o sacar.
 NOTICIAS = [
+    ("OLÉ", "https://www.ole.com.ar/rss/ultimas-noticias/"),
+    ("OLÉ", "https://www.ole.com.ar/rss/futbol-primera/"),
+    ("TYC SPORTS", "https://www.tycsports.com/rss.xml"),
+    ("TYC SPORTS", "https://www.tycsports.com/rss/futbol-argentino.xml"),
+    ("TYC SPORTS", "https://www.tycsports.com/rss/ultimas-noticias.xml"),
+    ("ESPN", "https://www.espn.com.ar/espn/rss/futbol/news"),
+    ("ESPN", "https://www.espn.com.ar/espn/rss/news"),
+    ("ESPN", "https://espndeportes.espn.com/espn/rss/futbol/news"),
     ("MARCA", "https://e00-marca.uecdn.es/rss/futbol/primera-division.xml"),
     ("MARCA", "https://e00-marca.uecdn.es/rss/futbol/futbol-internacional.xml"),
-    ("AS", "https://feeds.as.com/mrss-s/pages/as/site/as.com/section/futbol/portada/"),
-    ("SPORT", "https://www.sport.es/es/rss/last-news/news.xml"),
-    ("INFOBAE", "https://www.infobae.com/arc/outboundfeeds/rss/category/deportes/"),
-    ("LA NACIÓN", "https://www.lanacion.com.ar/arc/outboundfeeds/rss/category/deportes/"),
-    ("CLARÍN", "https://www.clarin.com/rss/deportes/"),
-    ("OLÉ", "https://www.ole.com.ar/rss/ultimas-noticias/"),
 ]
-# Búsquedas en Google Noticias (Argentina) para asegurar cada tema.
-# Traen titulares de Olé, TyC, ESPN, etc. (sin foto).
-BUSQUEDAS = [
-    '"Liga Profesional" OR Boca OR River OR Racing OR Independiente OR "San Lorenzo"',
-    '"Primera Nacional" OR "ascenso" fútbol',
-    '"Selección Argentina" OR Scaloni',
-    'Messi OR "Cristiano Ronaldo" OR Mbappé OR Haaland OR "Lamine Yamal"',
-    '"Real Madrid" OR Barcelona OR "Premier League" OR clásico fútbol',
-    'fichaje OR "mercado de pases" fútbol',
-]
+# Solo noticias de estos portales (el nombre que se muestra y su sitio web)
+SITIOS = {"OLÉ": "ole.com.ar", "TYC SPORTS": "tycsports.com", "ESPN": "espn.com.ar", "MARCA": "marca.com"}
+# Búsquedas en Google Noticias (Argentina), limitadas a esos portales.
+# La foto se consigue después entrando a la nota.
+_ARG = '(Boca OR River OR "Liga Profesional" OR Racing OR Independiente OR "San Lorenzo" OR "Selección Argentina")'
+BUSQUEDAS = (
+    [_ARG + " site:" + s for s in SITIOS.values()]
+    + ['("Primera Nacional" OR ascenso) fútbol site:' + s for s in ("ole.com.ar", "tycsports.com")]
+    + ["fútbol site:" + s for s in SITIOS.values()]
+)
 NAVEGADOR = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0 Safari/537.36"
 
 # ---------------------------------------------------------------------------
@@ -1010,7 +1012,7 @@ IMPORTANTE = ["fallecio", "murio", "muerte", "tragedia", "conmocion", "luto", "g
 POCO_INTERES = ["como ver", "donde ver", "a que hora", "por tv", "horario y tv", "en vivo y en directo", "pronostico",
                 "apuesta", "apuestas", "cuotas", "horoscopo", "quiniela", "sorteo", "minuto a minuto"]
 # Mezcla recomendada si la persona no eligió nada (suma 100)
-MEZCLA = [("arg asc sel", 40), ("top pl liga imp", 30), ("est", 20), ("fich otros", 10)]
+MEZCLA = [("arg asc sel", 55), ("top pl liga imp", 20), ("est", 15), ("fich otros", 10)]
 CANTIDAD = 20
 
 _noticias = {"t": 0, "lista": []}
@@ -1046,7 +1048,8 @@ def leer_feed(fuente, url):
     try:
         r = requests.get(url, timeout=10, headers={"User-Agent": NAVEGADOR})
         raiz = ET.fromstring(r.content)
-    except Exception:
+    except Exception as e:
+        _estado_feeds[url[:120]] = "no responde (" + type(e).__name__ + ")"
         return []
     salida = []
     for item in raiz.iter("item"):
@@ -1054,9 +1057,15 @@ def leer_feed(fuente, url):
         enlace = (item.findtext("link") or "").strip()
         if not titulo or not enlace:
             continue
-        origen = fuente or (item.findtext("source") or "NOTICIAS").strip().upper()
-        if not fuente and " - " in titulo:
-            titulo = titulo.rsplit(" - ", 1)[0]
+        origen = fuente
+        if not fuente:
+            fuente_tag = item.find("source")
+            sitio = (fuente_tag.get("url") if fuente_tag is not None else "") or ""
+            origen = next((nom for nom, dom in SITIOS.items() if dom in sitio), "")
+            if not origen:
+                continue  # solo Olé, TyC Sports, ESPN y Marca
+            if " - " in titulo:
+                titulo = titulo.rsplit(" - ", 1)[0]
         try:
             cuando = parsedate_to_datetime(item.findtext("pubDate")).astimezone(ARG)
         except Exception:
@@ -1066,12 +1075,86 @@ def leer_feed(fuente, url):
                        "orden": cuando.timestamp() if cuando else 0,
                        "cuando": cuando.strftime("%d/%m %H:%M") if cuando else "",
                        "_texto": normalizar(titulo + " " + resumen[:300]), "_tit": normalizar(titulo)})
+    _estado_feeds[url[:120]] = f"{len(salida)} noticias, {sum(1 for n in salida if n['imagen'])} con foto"
     return salida
+
+
+# --- Fotos: si el portal no manda la foto, se busca dentro de la nota ---
+_estado_feeds = {}
+_fotos = {}  # enlace original -> (foto, enlace real)
+
+
+def enlace_google_real(enlace):
+    """Google Noticias da un enlace propio; esto averigua la dirección real de la nota."""
+    m = re.search(r"/articles/([^?/]+)", enlace)
+    if not m:
+        return ""
+    codigo = m.group(1)
+    r = requests.get("https://news.google.com/rss/articles/" + codigo, timeout=8, headers={"User-Agent": NAVEGADOR})
+    sg = re.search(r'data-n-a-sg="([^"]+)"', r.text)
+    ts = re.search(r'data-n-a-ts="([^"]+)"', r.text)
+    if not sg or not ts:
+        return ""
+    pedido = ('["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,null,null,null,null,null,0,1],'
+              '"X","X",1,[1,1,1],1,1,null,0,0,null,0],"%s",%s,"%s"]' % (codigo, ts.group(1), sg.group(1)))
+    r2 = requests.post("https://news.google.com/_/DotsSplashUi/data/batchexecute", timeout=8,
+                       headers={"User-Agent": NAVEGADOR,
+                                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"},
+                       data={"f.req": json.dumps([[["Fbv4je", pedido, None, "generic"]]])})
+    try:
+        datos = json.loads(r2.text.split("\n\n", 1)[1])[:-2]
+        return json.loads(datos[0][2])[1]
+    except Exception:
+        m2 = re.search(r'https?:\\*/\\*/(?!news\.google)[^"\\]+', r2.text)
+        return m2.group(0).replace("\\/", "/").replace("\\", "") if m2 else ""
+
+
+def foto_de_la_nota(url):
+    """Lee el comienzo de la nota y saca la foto principal (la que usan las redes)."""
+    r = requests.get(url, timeout=7, headers={"User-Agent": NAVEGADOR}, stream=True)
+    html = ""
+    for parte in r.iter_content(16384, decode_unicode=False):
+        html += parte.decode("utf-8", "ignore")
+        if "</head>" in html or len(html) > 300000:
+            break
+    r.close()
+    for patron in (r'<meta[^>]+(?:property|name)=["\'](?:og:image|twitter:image)(?::src)?["\'][^>]*content=["\']([^"\']+)',
+                   r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*(?:property|name)=["\'](?:og:image|twitter:image)'):
+        m = re.search(patron, html, re.I)
+        if m:
+            foto = m.group(1).replace("&amp;", "&")
+            return ("https:" + foto) if foto.startswith("//") else foto
+    return ""
+
+
+def completar_foto(n):
+    clave = n["enlace"]
+    if clave not in _fotos:
+        foto, real = "", clave
+        try:
+            if "news.google." in clave:
+                real = enlace_google_real(clave) or ""
+            if real:
+                foto = foto_de_la_nota(real)
+        except Exception:
+            pass
+        _fotos[clave] = (foto, real or clave)
+    n["imagen"], n["enlace"] = _fotos[clave]
+
+
+_candado_noticias = threading.Lock()
 
 
 def traer_todas():
     if time.time() - _noticias["t"] < 900 and _noticias["lista"]:
         return _noticias["lista"]
+    with _candado_noticias:
+        if time.time() - _noticias["t"] < 900 and _noticias["lista"]:
+            return _noticias["lista"]
+        return _traer_todas()
+
+
+def _traer_todas():
     from concurrent.futures import ThreadPoolExecutor
     from urllib.parse import quote
     pedidos = list(NOTICIAS) + [("", "https://news.google.com/rss/search?q=" + quote(q + " when:2d") +
@@ -1108,9 +1191,18 @@ def traer_todas():
         else:
             n["_pal"], n["_fuentes"] = pn, {n["fuente"]}
             grupos.append(n)
+    # Fotos: a las que no traen, se les busca la foto dentro de la nota (las más nuevas primero)
+    if len(_fotos) > 3000:
+        _fotos.clear()
+    sin_foto = sorted([g for g in grupos if not g["imagen"]], key=lambda g: g["orden"], reverse=True)[:70]
+    with ThreadPoolExecutor(max_workers=10) as ex:
+        list(ex.map(completar_foto, sin_foto))
+    grupos = [g for g in grupos if g["imagen"]]  # todas las noticias con foto
     for g in grupos:
         horas = (ahora - g["orden"]) / 3600 if g["orden"] else 48
-        g["puntaje"] = (max(0.0, 48 - horas) / 48) + 1.2 * (len(g["_fuentes"]) - 1) + (1.5 if g["imp"] else 0) + (0.3 if g["imagen"] else 0)
+        argentina = any(t in ("arg", "asc", "sel") for t in g["temas"])
+        g["puntaje"] = ((max(0.0, 48 - horas) / 48) + 1.2 * (len(g["_fuentes"]) - 1) + (1.5 if g["imp"] else 0)
+                        + (0.6 if argentina else 0))
     _noticias.update(t=time.time(), lista=grupos)
     return grupos
 
@@ -2070,6 +2162,10 @@ class Manejador(BaseHTTPRequestHandler):
         elif url.path == "/api/noticias":
             prefs = re.sub(r"[^a-z,]", "", q.get("prefs", ""))[:60]
             self.json(lambda: datos_noticias(prefs))
+        elif url.path == "/api/noticias_estado":
+            self.json(lambda: {"portales": _estado_feeds, "fotos_buscadas": len(_fotos),
+                               "fotos_encontradas": sum(1 for f, _ in _fotos.values() if f),
+                               "noticias_con_foto": len(_noticias["lista"])})
         else:
             self.responder(404, "text/plain; charset=utf-8", "No encontrado")
 
@@ -2081,6 +2177,8 @@ if __name__ == "__main__":
     if not CLAVE:
         sys.exit("Falta la clave. En la compu: set FOOTBALL_DATA_KEY=tu_clave. En Render: cargala en Environment.")
     puerto_web = os.environ.get("PORT")
+    # Prepara las noticias apenas arranca, así el primero que entra no espera
+    threading.Thread(target=lambda: traer_todas(), daemon=True).start()
     if puerto_web:
         # Modo internet (Render): escucha en el puerto que le da el servicio
         servidor = ThreadingHTTPServer(("0.0.0.0", int(puerto_web)), Manejador)
