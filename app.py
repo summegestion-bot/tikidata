@@ -2616,7 +2616,7 @@ function mostrarPregunta() {
     });
     if (bien) { t.racha++; t.aciertos++; t.puntos += Math.round((100 + quedan * 10 + (t.racha >= 3 ? 50 : 0)) * t.nv.multi); } else t.racha = 0;
     $('segundos').innerHTML = bien ? '¡Bien! ✅' : (elegida ? 'Era: ' + esc(p[2]) : '⏰ Se terminó el tiempo');
-    setTimeout(() => { t.i++; if (t.i < t.preguntas.length) mostrarPregunta(); else finTrivia(); }, 1600);
+    setTimeout(() => { if (trivia !== t || !location.hash.startsWith('#/trivia')) return; t.i++; if (t.i < t.preguntas.length) mostrarPregunta(); else finTrivia(); }, 1600);
   };
   document.querySelectorAll('.opcion-trivia').forEach(b => b.onclick = () => responder(b.dataset.o));
   t.reloj = setInterval(() => {
@@ -3124,6 +3124,7 @@ function ruta() {
   const partes = location.hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   const [v, a, b] = partes;
   cerrarMenu();
+  if (trivia && v !== 'trivia') { clearInterval(trivia.reloj); trivia = null; }
   window.scrollTo(0, 0);
   const nav = { '': 'inicio', dia: 'inicio', calendario: 'calendario', favoritos: 'favoritos', jugadores: 'jugadores', jugador: 'jugadores', comparar: 'jugadores', ficha: 'jugadores' };
   navAbajo(nav[v || ''] || '');
