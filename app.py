@@ -1023,6 +1023,16 @@ def _palabras_clave(n):
             if len(w) > 2 and w not in GENERICAS]
 
 
+def _colores_ficha(ficha):
+    """Color de la camiseta titular según Wikipedia (cuerpo, pantalón, manga)."""
+    salida = []
+    for campo in ("body1", "shorts1", "leftarm1"):
+        c = _color(_campo(ficha, campo))
+        if c and c not in salida:
+            salida.append(c)
+    return salida
+
+
 def _buscar_pagina(idioma, nombres, pais=""):
     for extra in ([" " + pais] if pais else []) + [""]:
         for n in nombres:
@@ -1072,7 +1082,7 @@ def datos_wiki(nombres, pais=""):
             "apodo": _limpio(_campo(ficha, "apodo", "apodos", "nickname"))[:80],
             "dt": _limpio(_campo(ficha, "entrenador", "manager", "head_coach", "coach"))[:60],
             "descripcion": (paginas[0].get("extract") or "")[:700] if idioma == "es" else "",
-            "camisetas": _camisetas_html(idioma, titulo) or _camisetas_wiki(ficha), "fotoEstadio": "",
+            "camisetas": [], "coloresKit": _colores_ficha(ficha), "fotoEstadio": "",
         }
         if enlace:  # foto del estadio: la imagen principal de la página del estadio
             e = wiki(idioma, {"action": "query", "titles": enlace.group(1).strip(), "redirects": 1,
@@ -1141,6 +1151,348 @@ def _temporada_actual(texto):
     return bool(anios) and max(anios) >= datetime.now(ARG).year - 1
 
 
+
+# ---------------------------------------------------------------------------
+# Camisetas pixeladas: el diseño TRADICIONAL de cada club, cargado a mano.
+# Diseños: liso, franja (horizontal, como Boca), banda (diagonal, como River), rayas (verticales),
+# rayas3 (tres colores), mitad, aros (rayas horizontales), centro (raya vertical al medio), v (como Vélez)
+# Cada club: (diseño, color1, color2, opciones). Opciones: m = mangas, k = cuello, c3 = tercer color,
+# sup = camiseta suplente con el mismo formato. "arg": solo si el club es argentino (evita confusiones).
+# ---------------------------------------------------------------------------
+BL, NE, RO, CE, AZ, VE, AM, GR, NA = "#FFFFFF", "#161616", "#D5121E", "#6CB4E8", "#1F3F99", "#13803B", "#F7D117", "#7A1F2B", "#14235A"
+ORO, AZB, MA, CR, CEL = "#F5C400", "#1D4AA0", "#6B3E1F", "#EFE3C2", "#8FC9F0"
+CAMISETAS = {
+    # --- Argentina: Liga Profesional ---
+    "boca juniors": ("franja", AZB, ORO, {"sup": ("liso", ORO, AZB, {})}),
+    "river plate": ("banda", BL, RO, {"k": NE, "sup": ("banda", NE, RO, {})}),
+    "racing": ("rayas", CE, BL, {"m": BL, "arg": True, "sup": ("liso", NA, CE, {})}),
+    "independiente": ("liso", RO, BL, {"k": RO, "arg": True, "sup": ("liso", BL, RO, {})}),
+    "san lorenzo": ("rayas", AZ, RO, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "huracan": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "velez": ("v", BL, AZ, {"sup": ("v", AZ, BL, {})}),
+    "estudiantes": ("rayas", RO, BL, {"m": RO, "arg": True, "sup": ("liso", BL, RO, {})}),
+    "gimnasia": ("franja", BL, NA, {"arg": True, "sup": ("franja", NA, BL, {})}),
+    "lanus": ("liso", GR, BL, {"sup": ("liso", BL, GR, {})}),
+    "banfield": ("rayas", VE, BL, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "argentinos juniors": ("liso", RO, BL, {"sup": ("banda", BL, RO, {})}),
+    "rosario central": ("rayas", AZ, AM, {"m": AZ, "sup": ("liso", AM, AZ, {})}),
+    "newell": ("mitad", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "talleres": ("rayas", AZ, BL, {"m": AZ, "arg": True, "sup": ("liso", BL, AZ, {})}),
+    "belgrano": ("liso", CE, BL, {"sup": ("liso", NE, CE, {})}),
+    "instituto": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "godoy cruz": ("rayas", AZ, BL, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "independiente rivadavia": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "gimnasia mendoza": ("rayas", BL, NE, {"m": BL, "sup": ("liso", NE, BL, {})}),
+    "gimnasia y esgrima mendoza": ("rayas", BL, NE, {"m": BL, "sup": ("liso", NE, BL, {})}),
+    "atletico tucuman": ("rayas", CE, BL, {"m": CE, "sup": ("liso", AZ, BL, {})}),
+    "central cordoba": ("rayas", NE, BL, {"m": NE, "sup": ("liso", BL, NE, {})}),
+    "defensa y justicia": ("liso", AM, VE, {"sup": ("liso", VE, AM, {})}),
+    "platense": ("franja", BL, MA, {"sup": ("liso", MA, BL, {})}),
+    "tigre": ("franja", AZ, RO, {"arg": True, "sup": ("liso", BL, AZ, {})}),
+    "sarmiento": ("liso", VE, BL, {"arg": True, "sup": ("liso", BL, VE, {})}),
+    "barracas central": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "riestra": ("liso", NE, BL, {"sup": ("liso", BL, NE, {})}),
+    "aldosivi": ("rayas", VE, AM, {"m": VE, "sup": ("liso", AM, VE, {})}),
+    "union": ("rayas", RO, BL, {"m": RO, "arg": True, "sup": ("liso", BL, RO, {})}),
+    "san martin de san juan": ("rayas", VE, NE, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "san martin s j": ("rayas", VE, NE, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "newells": ("mitad", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "san martin sj": ("rayas", VE, NE, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "san martin de tucuman": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "estudiantes de rio cuarto": ("rayas", CE, BL, {"m": CE, "sup": ("liso", BL, CE, {})}),
+    # --- Argentina: ascenso ---
+    "colon": ("mitad", RO, NE, {"arg": True, "sup": ("liso", BL, RO, {})}),
+    "chacarita": ("rayas3", RO, BL, {"c3": NE, "m": NE, "sup": ("liso", BL, NE, {})}),
+    "quilmes": ("liso", BL, AZ, {"arg": True, "sup": ("liso", AZ, BL, {})}),
+    "ferro carril oeste": ("liso", VE, BL, {"sup": ("liso", BL, VE, {})}),
+    "ferro": ("liso", VE, BL, {"arg": True, "sup": ("liso", BL, VE, {})}),
+    "atlanta": ("rayas", AZ, AM, {"arg": True, "m": AZ, "sup": ("liso", AM, AZ, {})}),
+    "all boys": ("liso", BL, NE, {"sup": ("liso", NE, BL, {})}),
+    "nueva chicago": ("rayas", VE, NE, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "almirante brown": ("rayas", AM, NE, {"m": AM, "sup": ("liso", NE, AM, {})}),
+    "temperley": ("liso", CE, BL, {"sup": ("liso", BL, CE, {})}),
+    "patronato": ("rayas", RO, NE, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "arsenal de sarandi": ("banda", CE, RO, {"sup": ("liso", RO, CE, {})}),
+    "arsenal sarandi": ("banda", CE, RO, {"sup": ("liso", RO, CE, {})}),
+    "chaco for ever": ("rayas", NE, BL, {"m": NE, "sup": ("liso", BL, NE, {})}),
+    # --- Sudamérica ---
+    "penarol": ("rayas", AM, NE, {"m": NE, "sup": ("liso", BL, NE, {})}),
+    "nacional": ("liso", BL, AZ, {"sup": ("liso", AZ, BL, {})}),
+    "defensor sporting": ("liso", "#5B2C83", BL, {"sup": ("liso", BL, "#5B2C83", {})}),
+    "colo colo": ("liso", BL, NE, {"sup": ("liso", NE, BL, {})}),
+    "universidad de chile": ("liso", AZ, RO, {"sup": ("liso", BL, AZ, {})}),
+    "universidad catolica": ("franja", BL, AZ, {"sup": ("liso", AZ, BL, {})}),
+    "olimpia": ("franja", BL, NE, {"sup": ("liso", NE, BL, {})}),
+    "cerro porteno": ("rayas", AZ, RO, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "libertad": ("rayas", BL, NE, {"m": NE, "sup": ("liso", NE, BL, {})}),
+    "ldu": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "liga de quito": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "barcelona sc": ("liso", AM, NE, {"sup": ("liso", NE, AM, {})}),
+    "barcelona guayaquil": ("liso", AM, NE, {"sup": ("liso", NE, AM, {})}),
+    "independiente del valle": ("rayas", NA, NE, {"m": NE, "sup": ("liso", BL, NA, {})}),
+    "emelec": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "atletico nacional": ("rayas", VE, BL, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "millonarios": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "america de cali": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "junior": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "deportes tolima": ("liso", GR, AM, {"sup": ("liso", AM, GR, {})}),
+    "universitario": ("liso", CR, GR, {"sup": ("liso", GR, CR, {})}),
+    "alianza lima": ("rayas", AZ, BL, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "sporting cristal": ("liso", CE, BL, {"sup": ("liso", BL, CE, {})}),
+    "bolivar": ("liso", CE, BL, {"sup": ("liso", BL, CE, {})}),
+    "the strongest": ("rayas", AM, NE, {"m": AM, "sup": ("liso", NE, AM, {})}),
+    "flamengo": ("aros", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "palmeiras": ("liso", VE, BL, {"sup": ("liso", BL, VE, {})}),
+    "corinthians": ("liso", BL, NE, {"sup": ("liso", NE, BL, {})}),
+    "sao paulo": ("franja", BL, RO, {"sup": ("rayas3", RO, BL, {"c3": NE})}),
+    "santos": ("liso", BL, NE, {"sup": ("rayas", NE, BL, {"m": NE})}),
+    "fluminense": ("rayas3", GR, VE, {"c3": BL, "m": BL, "sup": ("liso", BL, GR, {})}),
+    "botafogo": ("rayas", NE, BL, {"m": NE, "sup": ("liso", BL, NE, {})}),
+    "vasco": ("banda", NE, BL, {"sup": ("banda", BL, NE, {})}),
+    "gremio": ("rayas3", CE, NE, {"c3": BL, "m": NE, "sup": ("liso", BL, CE, {})}),
+    "internacional": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "atletico mineiro": ("rayas", NE, BL, {"m": NE, "sup": ("liso", BL, NE, {})}),
+    "cruzeiro": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "bahia": ("liso", BL, AZ, {"sup": ("rayas3", AZ, RO, {"c3": BL})}),
+    "fortaleza": ("rayas3", AZ, RO, {"c3": BL, "m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "athletico": ("aros", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "bragantino": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "vitoria": ("aros", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "sport recife": ("aros", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "ceara": ("rayas", NE, BL, {"m": NE, "sup": ("liso", BL, NE, {})}),
+    "juventude": ("rayas", VE, BL, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "mirassol": ("liso", AM, VE, {"sup": ("liso", VE, AM, {})}),
+    # --- Europa ---
+    "real madrid": ("liso", BL, "#3D195B", {"sup": ("liso", NE, BL, {})}),
+    "barcelona": ("rayas", "#0B4EA2", "#A50044", {"m": "#0B4EA2", "k": "#A50044", "sup": ("liso", AM, "#A50044", {})}),
+    "atletico madrid": ("rayas", RO, BL, {"m": RO, "k": AZ, "sup": ("liso", AZ, RO, {})}),
+    "atletico de madrid": ("rayas", RO, BL, {"m": RO, "k": AZ, "sup": ("liso", AZ, RO, {})}),
+    "athletic": ("rayas", RO, BL, {"m": RO, "k": NE, "sup": ("liso", NE, RO, {})}),
+    "real betis": ("rayas", VE, BL, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "sevilla": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "valencia": ("liso", BL, NE, {"sup": ("liso", NE, BL, {})}),
+    "villarreal": ("liso", AM, AZ, {"sup": ("liso", AZ, AM, {})}),
+    "real sociedad": ("rayas", AZ, BL, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "juventus": ("rayas", BL, NE, {"m": NE, "sup": ("liso", NE, BL, {})}),
+    "inter": ("rayas", "#0A3D91", NE, {"m": "#0A3D91", "sup": ("liso", BL, "#0A3D91", {})}),
+    "milan": ("rayas", RO, NE, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "napoli": ("liso", CEL, BL, {"sup": ("liso", BL, CEL, {})}),
+    "roma": ("liso", "#8E1F2F", "#F0B323", {"sup": ("liso", BL, "#8E1F2F", {})}),
+    "lazio": ("liso", CEL, BL, {"sup": ("liso", NE, CEL, {})}),
+    "fiorentina": ("liso", "#5B2C83", BL, {"sup": ("liso", BL, "#5B2C83", {})}),
+    "atalanta": ("rayas", NE, "#1E5BB8", {"m": NE, "sup": ("liso", BL, "#1E5BB8", {})}),
+    "bayern": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "dortmund": ("liso", AM, NE, {"sup": ("liso", NE, AM, {})}),
+    "leverkusen": ("liso", RO, NE, {"sup": ("liso", NE, RO, {})}),
+    "paris": ("centro", NA, RO, {"m": NA, "sup": ("liso", BL, NA, {})}),
+    "psg": ("centro", NA, RO, {"m": NA, "sup": ("liso", BL, NA, {})}),
+    "marseille": ("liso", BL, CE, {"sup": ("liso", CE, BL, {})}),
+    "manchester united": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "man united": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "manchester city": ("liso", CEL, BL, {"sup": ("liso", NA, CEL, {})}),
+    "man city": ("liso", CEL, BL, {"sup": ("liso", NA, CEL, {})}),
+    "liverpool": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "arsenal": ("liso", RO, BL, {"m": BL, "sup": ("liso", AM, AZ, {})}),
+    "chelsea": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "tottenham": ("liso", BL, NA, {"sup": ("liso", NA, BL, {})}),
+    "newcastle": ("rayas", BL, NE, {"m": NE, "sup": ("liso", NE, BL, {})}),
+    "aston villa": ("liso", "#7A263A", CEL, {"m": CEL, "sup": ("liso", CEL, "#7A263A", {})}),
+    "west ham": ("liso", "#7A263A", CEL, {"m": CEL, "sup": ("liso", BL, "#7A263A", {})}),
+    "everton": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "benfica": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "porto": ("rayas", AZ, BL, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "sporting": ("aros", VE, BL, {"sup": ("liso", BL, VE, {})}),
+    "ajax": ("centro", BL, RO, {"ancho": True, "sup": ("liso", AZ, BL, {})}),
+    "psv": ("rayas", RO, BL, {"m": RO, "sup": ("liso", NE, RO, {})}),
+    "feyenoord": ("mitad", RO, BL, {"sup": ("liso", NE, RO, {})}),
+    "celtic": ("aros", VE, BL, {"sup": ("liso", BL, VE, {})}),
+}
+NAR, CLA, AMB, VIO, GRIS, VINO = "#F27C21", "#7A263A", "#F5A300", "#5B2C83", "#9AA0A8", "#6B1A2C"
+
+
+def K(p, c1, c2, sup=None, **op):
+    """Atajo para cargar un club: diseño, colores y la suplente (por defecto, lisa invertida)."""
+    op["sup"] = sup or ("liso", BL if c1 != BL else c2, c1 if c1 != BL else BL, {})
+    if op["sup"][1] == op["sup"][2]:
+        op["sup"] = ("liso", NE, c1, {})
+    return (p, c1, c2, op)
+
+
+def S(p, c1, c2, **op):
+    return (p, c1, c2, op)
+
+
+CAMISETAS.update({
+    # --- Inglaterra ---
+    "bournemouth": K("rayas", RO, NE, m=RO), "brentford": K("rayas", RO, BL, m=RO, k=NE),
+    "brighton": K("rayas", AZ, BL, m=AZ), "burnley": K("liso", CLA, CEL, m=CEL), "crystal palace": K("rayas", RO, AZ, m=AZ),
+    "fulham": K("liso", BL, NE), "leeds": K("liso", BL, AZ), "nottingham forest": K("liso", RO, BL),
+    "sunderland": K("rayas", RO, BL, m=RO, k=NE), "wolverhampton": K("liso", "#FDB913", NE), "wolves": K("liso", "#FDB913", NE),
+    "leicester": K("liso", AZ, BL), "ipswich": K("liso", AZ, BL), "southampton": K("rayas", RO, BL, m=RO, k=NE),
+    "sheffield united": K("rayas", RO, BL, m=RO, k=NE), "sheffield wednesday": K("rayas", AZ, BL, m=AZ),
+    "west bromwich": K("rayas", NA, BL, m=NA), "west brom": K("rayas", NA, BL, m=NA), "middlesbrough": K("liso", RO, BL),
+    "norwich": K("liso", AM, VE), "watford": K("liso", AM, NE), "coventry": K("liso", CEL, BL), "stoke": K("rayas", RO, BL, m=RO),
+    "queens park rangers": K("aros", AZ, BL), "qpr": K("aros", AZ, BL), "millwall": K("liso", NA, BL),
+    "hull": K("rayas", AMB, NE, m=AMB), "derby": K("liso", BL, NE), "bristol city": K("liso", RO, BL), "swansea": K("liso", BL, NE),
+    "cardiff": K("liso", AZ, BL), "preston": K("liso", BL, NA), "blackburn": K("mitad", AZ, BL), "birmingham": K("liso", AZ, BL),
+    "wrexham": K("liso", RO, BL), "charlton": K("liso", RO, BL), "portsmouth": K("liso", AZ, BL), "oxford": K("liso", AM, NA),
+    "luton": K("liso", NAR, NA), "plymouth": K("liso", VE, BL), "barnsley": K("liso", RO, BL), "blackpool": K("liso", NAR, BL),
+    # --- España ---
+    "alaves": K("rayas", AZ, BL, m=AZ), "celta": K("liso", CEL, BL), "elche": K("franja", BL, VE), "espanyol": K("rayas", AZ, BL, m=AZ),
+    "getafe": K("liso", AZ, BL), "girona": K("rayas", RO, BL, m=RO), "levante": K("rayas", AZ, GR, m=AZ),
+    "mallorca": K("liso", RO, NE), "osasuna": K("liso", RO, NA), "rayo vallecano": K("banda", BL, RO),
+    "oviedo": K("liso", AZ, BL), "las palmas": K("liso", AM, AZ), "leganes": K("rayas", AZ, BL, m=AZ), "valladolid": K("rayas", VIO, BL, m=VIO),
+    "deportivo la coruna": K("rayas", AZ, BL, m=AZ), "real zaragoza": K("liso", BL, AZ), "sporting gijon": K("rayas", RO, BL, m=RO),
+    "racing santander": K("liso", BL, VE),
+    # --- Italia ---
+    "bologna": K("rayas", RO, NA, m=NA), "cagliari": K("mitad", RO, NA), "como": K("liso", AZ, BL), "cremonese": K("rayas", RO, GRIS, m=RO),
+    "genoa": K("mitad", RO, NA), "verona": K("liso", NA, AM, k=AM), "lecce": K("rayas", AM, RO, m=AM), "parma": K("liso", BL, NE),
+    "pisa": K("rayas", AZ, NE, m=NE), "sassuolo": K("rayas", VE, NE, m=VE), "torino": K("liso", GR, BL), "udinese": K("rayas", BL, NE, m=NE),
+    "sampdoria": K("franja", AZ, BL), "empoli": K("liso", AZ, BL), "monza": K("mitad", RO, BL), "venezia": K("liso", NE, NAR),
+    "salernitana": K("liso", GR, BL), "frosinone": K("liso", AM, AZ),
+    # --- Alemania ---
+    "augsburg": K("liso", BL, RO), "monchengladbach": K("liso", BL, VE), "gladbach": K("liso", BL, VE),
+    "eintracht frankfurt": K("liso", NE, RO, k=RO), "frankfurt": K("liso", NE, RO, k=RO), "freiburg": K("liso", RO, NE),
+    "hamburger": K("liso", BL, RO), "hamburg": K("liso", BL, RO), "heidenheim": K("liso", RO, AZ), "hoffenheim": K("liso", AZ, BL),
+    "koln": K("liso", BL, RO), "mainz": K("liso", RO, BL), "leipzig": K("liso", BL, RO), "st pauli": K("liso", MA, BL),
+    "stuttgart": K("franja", BL, RO), "union berlin": K("liso", RO, BL), "werder": K("liso", VE, BL), "bremen": K("liso", VE, BL),
+    "wolfsburg": K("liso", "#65B32E", BL), "bochum": K("liso", AZ, BL), "holstein kiel": K("liso", AZ, BL), "schalke": K("liso", AZ, BL),
+    "hertha": K("rayas", AZ, BL, m=AZ),
+    # --- Francia ---
+    "angers": K("rayas", BL, NE, m=NE), "auxerre": K("liso", BL, AZ), "brest": K("liso", RO, BL), "le havre": K("mitad", CEL, NA),
+    "lens": K("liso", AM, RO, m=RO), "lille": K("liso", RO, NA), "lorient": K("liso", NAR, NE), "lyon": K("liso", BL, AZ),
+    "metz": K("liso", GR, BL), "monaco": K("diag", RO, BL), "nantes": K("liso", AM, VE), "nice": K("rayas", RO, NE, m=NE),
+    "paris fc": K("liso", NA, BL), "rennes": K("liso", RO, NE, m=NE), "strasbourg": K("liso", AZ, BL), "toulouse": K("liso", VIO, BL),
+    "saint etienne": K("liso", VE, BL), "montpellier": K("liso", NA, NAR), "reims": K("liso", RO, BL),
+    # --- Portugal ---
+    "braga": K("liso", RO, BL, m=BL), "guimaraes": K("liso", BL, NE), "boavista": K("cuadros", NE, BL), "famalicao": K("liso", AZ, BL),
+    "gil vicente": K("liso", RO, AZ), "rio ave": K("rayas", VE, BL, m=VE), "moreirense": K("liso", VE, BL), "arouca": K("liso", AM, AZ),
+    "estoril": K("rayas", AM, AZ, m=AM), "casa pia": K("liso", NE, BL), "santa clara": K("liso", RO, BL),
+    "tondela": K("rayas", AM, VE, m=VE), "alverca": K("liso", RO, BL), "estrela": K("rayas", RO, VE, m=RO), "avs": K("liso", RO, BL),
+    "nacional madeira": K("rayas", BL, NE, m=NE),
+    # --- Países Bajos ---
+    "az": K("liso", RO, BL), "alkmaar": K("liso", RO, BL), "twente": K("liso", RO, BL), "utrecht": K("liso", RO, BL),
+    "heerenveen": K("rayas", AZ, BL, m=BL), "groningen": K("mitad", VE, BL), "nec": K("rayas3", RO, VE, c3=NE, m=NE),
+    "go ahead eagles": K("mitad", RO, AM), "sparta rotterdam": K("rayas", RO, BL, m=RO), "fortuna sittard": K("liso", AM, VE),
+    "heracles": K("rayas", BL, NE, m=NE), "zwolle": K("liso", AZ, BL), "nac breda": K("liso", AM, NE), "excelsior": K("liso", RO, NE),
+    "volendam": K("liso", NAR, NE), "telstar": K("liso", BL, NE), "willem ii": K("rayas3", RO, BL, c3=AZ, m=AZ),
+    # --- Brasil (más) ---
+    "remo": K("liso", NA, BL), "coritiba": K("aros", BL, VE), "chapecoense": K("liso", VE, BL), "atletico goianiense": K("rayas", RO, NE, m=RO),
+    "goias": K("liso", VE, BL), "america mineiro": K("liso", VE, NE), "cuiaba": K("liso", AM, VE), "paysandu": K("rayas", CE, BL, m=CE),
+    "criciuma": K("rayas", AM, NE, m=AM), "avai": K("rayas", AZ, BL, m=AZ), "ponte preta": K("banda", BL, NE), "guarani": K("rayas", AM, NE, m=NE),
+    "nautico": K("rayas", RO, BL, m=RO), "santa cruz": K("aros", RO, NE), "novorizontino": K("liso", AM, NE), "operario": K("liso", NE, BL),
+    # --- Argentina: más ascenso ---
+    "defensores de belgrano": K("rayas", RO, NE, m=RO), "estudiantes de buenos aires": K("rayas", BL, NE, m=NE),
+    "estudiantes caseros": K("rayas", BL, NE, m=NE), "mitre": K("rayas", AM, NE, m=AM), "racing de cordoba": K("rayas", CE, BL, m=CE),
+    "racing cordoba": K("rayas", CE, BL, m=CE), "san telmo": K("rayas", CE, BL, m=CE), "atletico rafaela": K("rayas", CE, BL, m=CE),
+    "gimnasia de jujuy": K("rayas", CE, BL, m=CE), "gimnasia jujuy": K("rayas", CE, BL, m=CE), "gimnasia y tiro": K("rayas", BL, CE, m=BL),
+    "tristan suarez": K("rayas", AZ, AM, m=AZ), "alvarado": K("rayas", AZ, BL, m=AZ), "deportivo madryn": K("rayas", NE, AM, m=NE),
+    "guillermo brown": K("rayas", RO, BL, m=RO), "villa dalmine": K("rayas", VIO, BL, m=VIO), "deportivo maipu": K("rayas", RO, BL, m=RO),
+    "agropecuario": K("liso", VE, AM), "ciudad de bolivar": K("liso", AZ, BL), "san miguel": K("rayas", VE, BL, m=VE),
+    "deportivo moron": K("liso", BL, RO), "los andes": K("franja", RO, BL), "almagro": K("rayas3", AZ, BL, c3=NE, m=NE),
+    "comunicaciones": K("rayas", NE, AM, m=NE), "dock sud": K("rayas", RO, BL, m=RO), "fenix": K("liso", NE, AM), "midland": K("liso", RO, VE),
+    "flandria": K("rayas", VE, BL, m=VE), "excursionistas": K("rayas", VE, BL, m=VE), "acassuso": K("liso", CE, BL),
+    "deportivo armenio": K("rayas3", RO, AZ, c3=NAR, m=RO), "argentino de quilmes": K("rayas", CE, BL, m=CE),
+    "deportivo riestra": K("liso", NE, BL), "juventud unida": K("liso", BL, AZ), "sportivo italiano": K("liso", AZ, BL),
+    "colegiales": K("rayas3", AZ, RO, c3=AM, m=AZ), "ferrocarril midland": K("liso", RO, VE), "san martin de burzaco": K("liso", AM, NE),
+    "talleres de remedios": K("rayas", RO, BL, m=RO), "olimpo": K("franja", AM, NE), "villa mitre": K("liso", BL, NE),
+    "sol de mayo": K("liso", AZ, BL), "cipolletti": K("rayas", NE, BL, m=NE), "sansinena": K("rayas", RO, BL, m=RO),
+    "douglas haig": K("rayas", RO, NE, m=RO), "sportivo belgrano": K("liso", VE, BL), "juventud antoniana": K("rayas", AZ, BL, m=AZ),
+    "central norte": K("rayas", NE, BL, m=NE), "chaco": K("rayas", NE, BL, m=NE), "sarmiento de resistencia": K("liso", VE, BL),
+    "boca unidos": K("franja", AZ, AM), "crucero del norte": K("liso", AM, NE), "huracan las heras": K("liso", BL, RO),
+    "deportivo camioneros": K("liso", AZ, BL), "germinal": K("liso", BL, RO), "independiente chivilcoy": K("liso", RO, BL),
+    "union de sunchales": K("liso", BL, AZ), "kimberley": K("rayas", BL, VE, m=BL), "argentino de merlo": K("rayas", BL, CE, m=BL),
+    "lujan": K("rayas", BL, RO, m=BL), "berazategui": K("rayas", NA, AM, m=NA), "canuelas": K("liso", RO, NE),
+    # --- Sudamérica (más) ---
+    "danubio": K("banda", BL, NE), "montevideo wanderers": K("rayas", BL, NE, m=NE), "boston river": K("liso", VE, BL),
+    "cerro largo": K("liso", AM, AZ), "plaza colonia": K("liso", VE, BL), "racing montevideo": K("rayas", VE, BL, m=VE),
+    "cobreloa": K("liso", NAR, BL), "huachipato": K("rayas", AZ, NE, m=NE), "palestino": K("rayas3", VE, BL, c3=RO, m=VE),
+    "everton de vina": K("liso", ORO, AZ), "audax italiano": K("liso", VE, BL), "coquimbo": K("liso", AM, NE), "o higgins": K("liso", CE, BL),
+    "union espanola": K("liso", RO, BL), "deportes iquique": K("liso", CE, BL),
+    "guarani asuncion": K("rayas", AM, NE, m=NE), "nacional asuncion": K("rayas3", AZ, BL, c3=RO, m=AZ), "sportivo luqueno": K("rayas", AZ, AM, m=AZ),
+    "sportivo ameliano": K("liso", CE, BL), "sportivo trinidense": K("liso", BL, RO), "tacuary": K("rayas", BL, NE, m=NE),
+    "aucas": K("liso", AM, RO), "deportivo cuenca": K("liso", RO, BL), "universidad catolica quito": K("liso", CE, BL), "el nacional": K("liso", RO, AZ),
+    "macara": K("liso", CE, BL), "orense": K("liso", VE, BL), "mushuc runa": K("liso", RO, BL),
+    "union santa fe": K("rayas", RO, BL, m=RO, arg=True), "independiente santa fe": K("liso", RO, BL, m=BL), "santa fe": K("liso", RO, BL, m=BL), "deportivo cali": K("liso", VE, BL),
+    "once caldas": K("liso", BL, NE), "medellin": K("liso", RO, AZ), "bucaramanga": K("liso", AM, VE), "deportivo pereira": K("rayas", AM, RO, m=AM),
+    "melgar": K("mitad", RO, NE), "cienciano": K("liso", RO, BL), "cusco": K("liso", AM, NE), "sport huancayo": K("liso", RO, BL),
+    "always ready": K("liso", BL, RO), "wilstermann": K("liso", RO, AZ), "blooming": K("liso", CE, BL), "oriente petrolero": K("liso", VE, BL),
+    "san antonio bulo bulo": K("liso", VE, BL), "nacional potosi": K("liso", BL, AZ),
+    "caracas": K("liso", RO, BL), "deportivo tachira": K("rayas", AM, NE, m=AM), "universidad central": K("liso", BL, AZ),
+    "carabobo": K("liso", GR, BL), "monagas": K("liso", AZ, BL), "metropolitanos": K("liso", VIO, BL), "academia puerto cabello": K("liso", AZ, AM),
+})
+
+# --- Selecciones (solo si el nombre es exactamente el país) ---
+SELECCIONES = {
+    "argentina": K("rayas", CE, BL, sup=("liso", NA, CE, {}), m=BL, k=NE), "brazil": K("liso", AM, VE, sup=("liso", AZ, BL, {}), k=VE),
+    "brasil": K("liso", AM, VE, sup=("liso", AZ, BL, {}), k=VE), "uruguay": K("liso", "#5CBFEB", NE), "france": K("liso", NA, BL, k=RO),
+    "francia": K("liso", NA, BL, k=RO), "england": K("liso", BL, NA, sup=("liso", RO, BL, {})), "inglaterra": K("liso", BL, NA, sup=("liso", RO, BL, {})),
+    "spain": K("liso", RO, AM), "espana": K("liso", RO, AM), "germany": K("liso", BL, NE), "alemania": K("liso", BL, NE),
+    "portugal": K("liso", RO, VE), "netherlands": K("liso", NAR, NE), "paises bajos": K("liso", NAR, NE), "belgium": K("liso", RO, NE),
+    "belgica": K("liso", RO, NE), "italy": K("liso", "#1A55A6", BL), "italia": K("liso", "#1A55A6", BL), "croatia": K("cuadros", RO, BL),
+    "croacia": K("cuadros", RO, BL), "colombia": K("liso", AM, AZ, sup=("liso", NA, AM, {})), "mexico": K("liso", VE, BL, k=RO),
+    "united states": K("liso", BL, NA), "usa": K("liso", BL, NA), "estados unidos": K("liso", BL, NA), "canada": K("liso", RO, BL),
+    "japan": K("liso", NA, BL), "japon": K("liso", NA, BL), "south korea": K("liso", RO, NE), "korea republic": K("liso", RO, NE),
+    "corea del sur": K("liso", RO, NE), "morocco": K("liso", RO, VE), "marruecos": K("liso", RO, VE), "senegal": K("liso", BL, VE),
+    "ecuador": K("liso", AM, AZ), "paraguay": K("rayas", RO, BL, m=AZ, k=AZ), "chile": K("liso", RO, AZ), "peru": K("banda", BL, RO),
+    "bolivia": K("liso", VE, BL), "venezuela": K("liso", VINO, AM), "switzerland": K("liso", RO, BL), "suiza": K("liso", RO, BL),
+    "austria": K("liso", RO, BL), "norway": K("liso", RO, NA), "noruega": K("liso", RO, NA), "scotland": K("liso", NA, BL),
+    "escocia": K("liso", NA, BL), "australia": K("liso", AM, VE), "saudi arabia": K("liso", VE, BL), "arabia saudita": K("liso", VE, BL),
+    "qatar": K("liso", "#8A1538", BL), "iran": K("liso", BL, RO), "egypt": K("liso", RO, NE), "egipto": K("liso", RO, NE),
+    "tunisia": K("liso", RO, BL), "tunez": K("liso", RO, BL), "algeria": K("liso", BL, VE), "argelia": K("liso", BL, VE),
+    "ghana": K("liso", BL, NE), "ivory coast": K("liso", NAR, VE), "cote d ivoire": K("liso", NAR, VE), "costa de marfil": K("liso", NAR, VE),
+    "south africa": K("liso", AM, VE), "sudafrica": K("liso", AM, VE), "cape verde": K("liso", AZ, RO), "cabo verde": K("liso", AZ, RO),
+    "new zealand": K("liso", BL, NE), "nueva zelanda": K("liso", BL, NE), "panama": K("liso", RO, AZ), "haiti": K("liso", AZ, RO),
+    "uzbekistan": K("liso", BL, AZ), "jordan": K("liso", BL, RO), "jordania": K("liso", BL, RO), "turkey": K("liso", RO, BL),
+    "turkiye": K("liso", RO, BL), "turquia": K("liso", RO, BL), "denmark": K("liso", RO, BL), "dinamarca": K("liso", RO, BL),
+    "poland": K("liso", BL, RO), "polonia": K("liso", BL, RO), "sweden": K("liso", AM, AZ), "suecia": K("liso", AM, AZ),
+    "czechia": K("liso", RO, AZ), "czech republic": K("liso", RO, AZ), "ukraine": K("liso", AM, AZ), "serbia": K("liso", RO, AZ),
+    "wales": K("liso", RO, VE), "gales": K("liso", RO, VE), "ireland": K("liso", VE, BL), "republic of ireland": K("liso", VE, BL),
+    "curacao": K("liso", AZ, AM), "nigeria": K("liso", VE, BL), "cameroon": K("liso", VE, RO), "camerun": K("liso", VE, RO),
+    "iraq": K("liso", VE, BL), "costa rica": K("liso", RO, AZ), "honduras": K("liso", BL, AZ), "jamaica": K("liso", AM, VE),
+    "dr congo": K("liso", AZ, RO), "bosnia and herzegovina": K("liso", AZ, AM), "slovakia": K("liso", BL, AZ), "hungary": K("liso", RO, BL),
+    "greece": K("liso", BL, AZ), "romania": K("liso", AM, AZ), "kosovo": K("liso", AZ, AM), "north macedonia": K("liso", RO, AM),
+}
+
+_CLAVES_KIT = sorted(CAMISETAS, key=len, reverse=True)
+COLORES_FD = {"red": RO, "white": BL, "black": NE, "blue": AZ, "navyblue": NA, "navy": NA, "royalblue": AZ,
+              "skyblue": CEL, "lightblue": CEL, "green": VE, "yellow": AM, "gold": ORO, "orange": "#F27C21",
+              "claret": "#7A263A", "maroon": GR, "burgundy": GR, "purple": "#5B2C83", "violet": "#5B2C83",
+              "grey": "#8A8F98", "gray": "#8A8F98", "silver": "#C0C4CC", "amber": "#FFBF00", "brown": MA}
+
+
+def _kit(t, tipo):
+    diseno, c1, c2, op = t
+    return {"tipo": tipo, "pix": {"p": diseno, "c1": c1, "c2": c2, "c3": op.get("c3", ""), "m": op.get("m", ""),
+                                  "k": op.get("k", ""), "ancho": bool(op.get("ancho"))}}
+
+
+def camisetas_pixel(nombres, argentino=False, colores_fd="", colores_wiki=None):
+    """Titular y suplente tradicionales del club, para dibujar pixeladas."""
+    for n in nombres:  # selecciones: el nombre tiene que ser exactamente el país
+        t = SELECCIONES.get(normalizar(n).strip())
+        if t:
+            return [_kit(t, "Titular"), _kit(t[3]["sup"], "Suplente")]
+    for n in nombres:
+        tn = normalizar(n)
+        for clave in _CLAVES_KIT:
+            if all(" " + w + " " in tn for w in clave.split() if w not in ("de", "del", "y", "la")):
+                t = CAMISETAS[clave]
+                if t[3].get("arg") and not argentino:
+                    continue
+                return [_kit(t, "Titular"), _kit(t[3]["sup"], "Suplente")] if "sup" in t[3] else [_kit(t, "Titular")]
+    # Clubes que no están en la lista: los colores del club (football-data), lisa
+    colores = [COLORES_FD.get(re.sub(r"[^a-z]", "", c.lower()))
+               for c in re.split(r"\s*/\s*|\s*,\s*|\s+and\s+", colores_fd or "")]
+    colores = [c for c in colores if c]
+    if not colores and colores_wiki:  # último recurso: los colores de la ficha de Wikipedia
+        colores = [c for c in colores_wiki if c]
+    if not colores:
+        return []
+    c1, c2 = colores[0], (colores[1] if len(colores) > 1 else (BL if colores[0] != BL else NE))
+    return [_kit(("liso", c1, c2, {}), "Titular"), _kit(("liso", c2, c1, {}), "Suplente")]
+
+
 def es_argentino(id_txt):
     if not id_txt.startswith("h"):
         return False
@@ -1173,10 +1525,8 @@ def datos_club_extra(id_equipo):
             id_t, id_v = extra.get("idTeam"), extra.get("idVenue")
             with ThreadPoolExecutor(max_workers=3) as ex2:
                 f_venue = ex2.submit(tsdb, f"/lookupvenue.php?id={id_v}") if id_v else None
-                f_kits = ex2.submit(tsdb, f"/lookupequipment.php?id={id_t}") if id_t else None
                 f_jug = ex2.submit(tsdb, f"/lookup_all_players.php?id={id_t}") if id_t and t.get("squad") is None else None
                 venue = (primera_lista(f_venue.result()) or [{}])[0] if f_venue else {}
-                kits = primera_lista(f_kits.result()) if f_kits else []
                 jugadores = primera_lista(f_jug.result()) if f_jug else []
         try:
             w = f_wiki.result(timeout=20) or {}
@@ -1193,24 +1543,8 @@ def datos_club_extra(id_equipo):
     res["descripcion"] = (w.get("descripcion") or extra.get("strDescriptionES") or extra.get("strDescriptionEN") or "")[:700]
     res["fotoEstadio"] = (venue.get("strThumb") or extra.get("strStadiumThumb") or w.get("fotoEstadio")
                           or venue.get("strFanart1") or extra.get("strFanart1") or "")
-    # Camisetas: foto real de esta temporada si hay; si no, el dibujo de Wikipedia; si no, los colores del club
-    tipos = {"1st": "Titular", "2nd": "Suplente", "3rd": "Alternativa"}
-    kits = sorted(kits, key=lambda k: k.get("strSeason") or "", reverse=True)
-    temporada = kits[0].get("strSeason") if kits else None
-    fotos_kit = {}
-    if temporada and _temporada_actual(temporada):
-        for k in kits:
-            tipo = tipos.get(k.get("strType"), "")
-            if k.get("strSeason") == temporada and k.get("strEquipment") and tipo and tipo not in fotos_kit:
-                fotos_kit[tipo] = {"tipo": tipo, "imagen": k["strEquipment"]}
-    dibujos = {k["tipo"]: k for k in w.get("camisetas", [])}
-    if not dibujos and not fotos_kit:
-        colores = [_color_nombre(c) for c in re.split(r"\s*/\s*|\s+y\s+|\s*,\s*", t.get("clubColors") or "")]
-        dibujos = {k["tipo"]: k for k in kits_por_colores(colores)}
-    for tipo in ("Titular", "Suplente", "Alternativa"):
-        k = fotos_kit.get(tipo) or dibujos.get(tipo)
-        if k:
-            res["camisetas"].append(k)
+    # Camisetas: el diseño tradicional del club, dibujado pixelado
+    res["camisetas"] = camisetas_pixel(nombres, bool(pais), t.get("clubColors") or "", w.get("coloresKit"))
     if t.get("squad") is None:  # equipos de Highlightly: plantel desde TheSportsDB
         res["plantel"] = [{"id": jp.get("idPlayer"), "nombre": jp.get("strPlayer") or "", "posicion": jp.get("strPosition") or "",
                            "nacimiento": jp.get("dateBorn") or "", "nacionalidad": jp.get("strNationality") or "",
@@ -1690,6 +2024,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .kit > div { position:absolute; overflow:hidden; }
 .camisetas figure:has(.kit) { background:#fff; } .camisetas figure:has(.kit) figcaption { color:#3A4658; }
 .kit-svg { width:100%; height:110px; display:block; }
+.camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; background:#fff; border-radius:8px; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
 .kit.pix > div img { image-rendering:pixelated; }
 .kit .la { left:0; top:0; width:31px; height:59px; } .kit .b { left:31px; top:0; width:38px; height:59px; }
@@ -2284,7 +2619,52 @@ function camisetaWiki(k) {
   }).join('');
   return `<div class="kit pix" role="img" aria-label="Camiseta ${esc(k.tipo)}" style="height:${alto || 135}px">${partes}</div>`;
 }
+// Camiseta pixel art (16 x 16 cuadraditos), con el diseño tradicional del club
+function camisetaPixel(x) {
+  const W = 16, H = 16, celdas = {};
+  const pon = (cx, cy, t) => { celdas[cx + ',' + cy] = t; };
+  for (let cx = 2; cx <= 13; cx++) if (cx < 6 || cx > 9) pon(cx, 2, 'm');      // hombros
+  pon(6, 2, 'k'); pon(9, 2, 'k');                                              // cuello
+  for (let cy = 3; cy <= 5; cy++) for (let cx = 1; cx <= 14; cx++) pon(cx, cy, cx < 4 || cx > 11 ? 'm' : 'b');
+  pon(7, 3, 'k'); pon(8, 3, 'k');
+  for (let cx = 1; cx <= 14; cx++) pon(cx, 6, cx < 4 || cx > 11 ? 'p' : 'b');  // puños
+  for (let cy = 7; cy <= 14; cy++) for (let cx = 4; cx <= 11; cx++) pon(cx, cy, 'b');
+  const c1 = x.c1, c2 = x.c2, c3 = x.c3 || x.c2;
+  const cuerpo = (cx, cy) => {
+    const bx = cx - 4, by = cy - 3;
+    switch (x.p) {
+      case 'franja': return by >= 4 && by <= 6 ? c2 : c1;
+      case 'banda': return Math.abs(bx - by * 7 / 11) <= 0.9 ? c2 : c1;
+      case 'rayas': return (bx < 4 ? bx : 7 - bx) % 2 === 0 ? c1 : c2;  // simétrica
+      case 'rayas3': return [c1, c2, c3][bx % 3];
+      case 'mitad': return bx < 4 ? c1 : c2;
+      case 'aros': return Math.floor(by / 2) % 2 === 0 ? c1 : c2;
+      case 'centro': return (x.ancho ? bx >= 2 && bx <= 5 : bx >= 3 && bx <= 4) ? c2 : c1;
+      case 'diag': return bx + by * 8 / 12 < 7 ? c1 : c2;
+      case 'cuadros': return (bx + by) % 2 === 0 ? c1 : c2;
+      case 'v': { const d = Math.min(bx, 7 - bx); return (by === d || by === d + 1) && by <= 4 ? c2 : c1; }
+      default: return c1;
+    }
+  };
+  const manga = (cx, cy) => x.p === 'aros' ? (Math.floor((cy - 3) / 2) % 2 === 0 ? c1 : c2) : (x.m || (x.p === 'mitad' ? (cx < 8 ? c1 : c2) : c1));
+  const detalle = x.k || (x.p === 'liso' ? c2 : (x.m && x.m !== c1 ? x.m : c2));
+  let r = '';
+  for (let cy = 0; cy < H; cy++) for (let cx = 0; cx < W; cx++) {
+    const t = celdas[cx + ',' + cy];
+    let color = null;
+    if (t === 'b') color = cuerpo(cx, cy);
+    else if (t === 'm') color = manga(cx, cy);
+    else if (t === 'k' || t === 'p') color = detalle;
+    else if ([[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]].some(([a, b]) => celdas[(cx + a) + ',' + (cy + b)])) color = '#111';
+    if (color) r += `<rect x="${cx}" y="${cy}" width="1" height="1" fill="${color}"/>`;
+  }
+  // cuadrícula finita, como en papel cuadriculado
+  let grilla = '';
+  for (let i = 1; i < W; i++) grilla += `<line x1="${i}" y1="0" x2="${i}" y2="${H}"/><line x1="0" y1="${i}" x2="${W}" y2="${i}"/>`;
+  return `<svg class="kit-pix" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges" role="img">${r}<g stroke="rgba(0,0,0,.18)" stroke-width=".05">${grilla}</g></svg>`;
+}
 function camisetaDibujo(k) {
+  if (k.pix) return camisetaPixel(k.pix);
   if (k.partes) return camisetaWiki(k);
   const color = (v) => /^#[0-9a-f]{3,6}$|^[a-z]{3,20}$/i.test(v || '') ? v : '#888';
   if (!Object.values(k.dibujo || {}).some(Boolean)) return camisetaSVG(k);  // lisa: dibujo propio
