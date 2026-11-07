@@ -2203,6 +2203,13 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .opcion-trivia.mal { background:#4A1A20; border-color:var(--vivo); }
 .barra-tiempo { height:6px; border-radius:3px; background:var(--sup); overflow:hidden; }
 .barra-tiempo div { height:100%; width:100%; background:var(--azul); transition:width 1s linear; }
+.aviso-gol { position:fixed; left:50%; top:10px; z-index:60; width:min(520px, calc(100% - 20px)); transform:translate(-50%, -140%); transition:transform .35s cubic-bezier(.2,1.3,.4,1);
+  display:flex; gap:10px; align-items:center; padding:12px; border-radius:18px; background:rgba(34,46,74,.97); border:1px solid #3B5686; box-shadow:0 12px 34px rgba(0,0,0,.55); color:var(--texto); }
+.aviso-gol.on { transform:translate(-50%, 0); }
+.aviso-gol img { width:42px; height:42px; border-radius:11px; background:var(--fondo); padding:2px; flex:none; }
+.aviso-gol small { display:block; font-size:11px; color:#AEB9CC; font-weight:600; }
+.aviso-gol b { display:block; font-size:15px; font-weight:900; margin-top:2px; }
+.aviso-gol span span, .aviso-gol > span > span { display:block; font-size:12.5px; color:#DCE3EE; }
 .camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
 .kit.pix > div img { image-rendering:pixelated; }
@@ -2334,6 +2341,7 @@ function armarMenu() {
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
     <a class="item" href="#/jugadores">${svg(ICON.jug,20)}Goleadores y comparador</a>
     <a class="item" href="#/favoritos">${svg(ICON.estrella,20)}Mis favoritos</a>
+    <a class="item" href="#/favoritos"><span style="width:20px;text-align:center">🔔</span>Avisos de gol en vivo</a>
     <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
     <a class="item" href="#/trivia"><span style="width:20px;text-align:center">🧠</span>Trivia de fútbol</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
@@ -2904,9 +2912,11 @@ async function vistaFavoritos() {
   const favs = leer('tiki_favs', []);
   $('vista').innerHTML = volver('Mis clubes favoritos') + `<main>
     <p class="nota-pie" style="margin:0">Tocá la estrella de los clubes que querés seguir. Sus partidos aparecen primero en el Inicio. Se guardan en este dispositivo.</p>
+    ${bloqueAvisos()}
     ${favs.length ? `<section class="tarjeta pad"><b style="font-size:14px">Elegidos (${favs.length})</b><div class="chips" style="margin-top:10px">${favs.map(f => `<button class="chip on" data-quitar="${f.id}">${escudo(f)}${esc(f.nombre)} ✕</button>`).join('')}</div></section>` : ''}
     <div class="chips">${Object.keys(LIGAS).filter(c => !['CL', 'WC', 'CAR', 'LIB', 'SUD'].includes(c)).map(c => `<button class="chip ${c === ligaFav ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <div id="clubes"><div class="cargando">Cargando clubes…</div></div></main>`;
+  activarBloqueAvisos(vistaFavoritos);
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaFav = b.dataset.l; vistaFavoritos(); });
   document.querySelectorAll('[data-quitar]').forEach(b => b.onclick = () => { guardar('tiki_favs', favs.filter(f => String(f.id) !== b.dataset.quitar)); vistaFavoritos(); });
   try {
@@ -3132,6 +3142,85 @@ function ruta() {
   if (v === 'ficha') return vistaFicha(a);
   vistaInicio();
 }
+/* ---------- Avisos de gol en vivo ---------- */
+// Modo guardado: 'off' | 'favs' (mis favoritos) | 'lpf' (toda la Liga Profesional) | 'todo' (favoritos + Liga Profesional)
+const avisos = { modo: leer('tiki_avisos', 'off'), memo: leer('tiki_avisos_memo', {}), timer: null };
+function idsAvisos() { return leer('tiki_favs', []).map(f => String(f.id)); }
+function partidoVigilado(p) {
+  const favs = idsAvisos();
+  const esFav = favs.includes(String(p.local.id)) || favs.includes(String(p.visitante.id));
+  if (avisos.modo === 'favs') return esFav;
+  if (avisos.modo === 'lpf') return p.liga === 'LPF';
+  if (avisos.modo === 'todo') return esFav || p.liga === 'LPF';
+  return false;
+}
+async function revisarGoles() {
+  clearTimeout(avisos.timer);
+  if (avisos.modo === 'off') return;
+  let proximo = 5 * 60 * 1000;  // sin partidos en juego: cada 5 minutos
+  try {
+    const d = await pedir('/api/hoy?fecha=' + hoyISO());
+    const partidos = d.grupos.flatMap(g => g.partidos).filter(partidoVigilado);
+    const ahora = Date.now();
+    for (const p of partidos) {
+      const antes = avisos.memo[p.id];
+      const gl = p.gl ?? 0, gv = p.gv ?? 0;
+      if (antes && (p.vivo || p.terminado)) {
+        if (gl > antes.gl) avisoGol(p, p.local, gl, gv);
+        if (gv > antes.gv) avisoGol(p, p.visitante, gl, gv);
+        if (p.terminado && !antes.fin) mostrarAviso(p, '🏁 ¡Final del partido!', `${p.local.nombre} ${gl} - ${gv} ${p.visitante.nombre}`);
+      }
+      avisos.memo[p.id] = { gl, gv, fin: !!p.terminado, t: ahora };
+      const inicio = new Date(p.fecha + 'T' + p.hora + ':00').getTime();
+      if (p.vivo || (inicio - ahora < 15 * 60 * 1000 && !p.terminado)) proximo = 45 * 1000;  // en juego: cada 45 segundos
+    }
+    Object.keys(avisos.memo).forEach(k => { if (ahora - avisos.memo[k].t > 2 * 86400000) delete avisos.memo[k]; });
+    guardar('tiki_avisos_memo', avisos.memo);
+  } catch (e) { proximo = 2 * 60 * 1000; }
+  avisos.timer = setTimeout(revisarGoles, proximo);
+}
+function avisoGol(p, equipo, gl, gv) {
+  const min = p.minuto ? ` · ${p.minuto}'` : '';
+  mostrarAviso(p, `⚽ ¡GOL de ${equipo.nombre}!`, `${p.local.nombre} ${gl} - ${gv} ${p.visitante.nombre}${min}`);
+}
+function mostrarAviso(p, titulo, texto) {
+  // 1) cartel dentro de la app, como una notificación
+  const n = document.createElement('a');
+  n.className = 'aviso-gol'; n.href = '#/partido/' + p.id;
+  n.innerHTML = `<img src="/logo.png" alt=""><span style="flex:1;min-width:0"><small>TIKI DATA · ahora</small><b>${esc(titulo)}</b><span>${esc(texto)}</span></span>`;
+  n.onclick = () => n.remove();
+  document.body.appendChild(n);
+  requestAnimationFrame(() => n.classList.add('on'));
+  setTimeout(() => { n.classList.remove('on'); setTimeout(() => n.remove(), 400); }, 7000);
+  if (navigator.vibrate) navigator.vibrate([120, 60, 120]);
+  // 2) notificación del celular (si dio permiso)
+  if ('Notification' in window && Notification.permission === 'granted' && navigator.serviceWorker) {
+    navigator.serviceWorker.ready.then(reg => reg.showNotification(titulo, {
+      body: texto, icon: '/icono-192.png', badge: '/icono-192.png', tag: 'gol-' + p.id + '-' + titulo, data: { url: '/#/partido/' + p.id } })).catch(() => {});
+  }
+}
+async function cambiarAvisos(modo) {
+  if (modo !== 'off' && 'Notification' in window && Notification.permission === 'default') {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  avisos.modo = modo; guardar('tiki_avisos', modo);
+  revisarGoles();
+}
+function bloqueAvisos() {
+  const opciones = [['off', 'Apagados'], ['favs', 'Mis favoritos'], ['lpf', 'Liga Profesional'], ['todo', 'Favoritos + Liga']];
+  const permiso = !('Notification' in window) ? 'Tu navegador no permite notificaciones: los avisos aparecen dentro de la app.'
+    : Notification.permission === 'denied' ? 'Bloqueaste las notificaciones en el navegador: los avisos aparecen solo dentro de la app.'
+    : 'Te avisamos cada gol mientras tengas Tiki Data abierta (o en segundo plano).';
+  return `<section class="tarjeta pad"><b style="font-size:15px">🔔 Avisos de gol en vivo</b>
+    <div class="chips" style="margin-top:10px">${opciones.map(([k, n]) => `<button class="chip ${avisos.modo === k ? 'on' : ''}" data-avisos="${k}">${n}</button>`).join('')}</div>
+    <p class="nota-pie" style="margin:8px 0 0">${permiso}</p>
+    <button class="link" id="probarAviso" style="margin-top:6px">Probar cómo se ve un aviso</button></section>`;
+}
+function activarBloqueAvisos(redibujar) {
+  document.querySelectorAll('[data-avisos]').forEach(b => b.onclick = async () => { await cambiarAvisos(b.dataset.avisos); redibujar(); });
+  const pr = $('probarAviso');
+  if (pr) pr.onclick = () => mostrarAviso({ id: 'ejemplo' }, '⚽ ¡GOL de Tiki Data!', 'Así te avisamos cada gol de tus equipos');
+}
 /* ---------- Instalar como app (PWA) ---------- */
 let pedidoInstalar = null;
 const esIphone = /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -3158,6 +3247,7 @@ window.addEventListener('appinstalled', () => { pedidoInstalar = null; activarIn
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 armarMenu();
 activarInstalar();
+revisarGoles();
 window.addEventListener('hashchange', ruta);
 // Contador de visitas: cuenta cada pantalla que se mira (inicio, partido, club, etc.)
 function contarVisita(intento = 0) {
@@ -3194,11 +3284,20 @@ MANIFIESTO = {
     ],
 }
 SERVICE_WORKER = r"""
-const CACHE = 'tiki-v1';
+const CACHE = 'tiki-v2';
 const BASE = ['/', '/logo.png', '/icono-192.png', '/manifest.webmanifest'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(BASE)).catch(() => {})); self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== CACHE).map(k => caches.delete(k)))).then(() => self.clients.claim()));
+});
+// Al tocar un aviso de gol: abre (o trae al frente) Tiki Data en ese partido
+self.addEventListener('notificationclick', e => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || '/';
+  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(cs => {
+    for (const c of cs) { if ('focus' in c) { c.navigate(url).catch(() => {}); return c.focus(); } }
+    return self.clients.openWindow(url);
+  }));
 });
 // Primero internet (datos siempre frescos); si no hay señal, lo último guardado.
 self.addEventListener('fetch', e => {
