@@ -2190,6 +2190,19 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .kit > div { position:absolute; overflow:hidden; }
 .camisetas figure:has(.kit) { background:#fff; } .camisetas figure:has(.kit) figcaption { color:#3A4658; }
 .kit-svg { width:100%; height:110px; display:block; }
+.cats-trivia { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+.cat-trivia { display:flex; flex-direction:column; align-items:center; gap:6px; padding:16px 10px; border:1px solid var(--borde); text-align:center; }
+.cat-trivia b { font-size:14px; } .cat-trivia small { font-size:11px; color:var(--suave); }
+.cat-trivia:active, .opcion-trivia:active { transform:scale(.98); }
+.niveles-trivia { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-top:10px; }
+.nivel-trivia { display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 4px; border-radius:10px; border:1.5px solid var(--borde); background:var(--sup); font-weight:800; font-size:13px; }
+.nivel-trivia small { font-size:10px; font-weight:600; color:var(--suave); }
+.nivel-trivia.on { border-color:var(--azul); background:var(--tarj2); box-shadow:0 0 0 1px var(--azul) inset; }
+.opcion-trivia { min-height:54px; padding:12px 16px; border-radius:12px; border:1.5px solid var(--borde); background:var(--tarj); font-size:15px; font-weight:700; text-align:left; }
+.opcion-trivia.bien { background:#12452D; border-color:var(--verde); }
+.opcion-trivia.mal { background:#4A1A20; border-color:var(--vivo); }
+.barra-tiempo { height:6px; border-radius:3px; background:var(--sup); overflow:hidden; }
+.barra-tiempo div { height:100%; width:100%; background:var(--azul); transition:width 1s linear; }
 .camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
 .kit.pix > div img { image-rendering:pixelated; }
@@ -2322,6 +2335,7 @@ function armarMenu() {
     <a class="item" href="#/jugadores">${svg(ICON.jug,20)}Goleadores y comparador</a>
     <a class="item" href="#/favoritos">${svg(ICON.estrella,20)}Mis favoritos</a>
     <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
+    <a class="item" href="#/trivia"><span style="width:20px;text-align:center">🧠</span>Trivia de fútbol</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
   grupos.forEach(([n, cods]) => {
     h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c]}"></span>${esc(LIGAS[c][0])}</a>`).join('');
@@ -2452,6 +2466,174 @@ async function cargarResumenYT(id) {
       el.innerHTML = `<a class="boton yt" href="${esc(r.busqueda)}" target="_blank" rel="noopener">${svg('M8 5v14l11-7z',18,'fill="currentColor" stroke="none"')}Buscar el resumen en YouTube</a><p class="nota-pie" style="margin:6px 0 0">${txt}</p>`;
     }
   } catch (e) { el.innerHTML = ''; }
+}
+
+/* ---------- Trivia de fútbol (estilo Preguntados) ---------- */
+// Cada pregunta: [categoría, pregunta, respuesta correcta, otras 3 opciones, nivel (1 fácil, 2 medio, 3 difícil)]
+const PREGUNTAS = [
+  ['sel', '¿Cuántos Mundiales ganó la Selección Argentina?', '3', ['2', '4', '1'], 1],
+  ['sel', '¿En qué país se jugó el Mundial 2022?', 'Qatar', ['Rusia', 'Brasil', 'Arabia Saudita'], 1],
+  ['sel', '¿Quién era el DT de Argentina en el Mundial 2022?', 'Lionel Scaloni', ['Jorge Sampaoli', 'Gerardo Martino', 'Alejandro Sabella'], 1],
+  ['sel', '¿Contra qué selección jugó Argentina la final del Mundial 2022?', 'Francia', ['Croacia', 'Brasil', 'Países Bajos'], 1],
+  ['sel', '¿Quién atajó en la final del Mundial 2022 para Argentina?', 'Emiliano "Dibu" Martínez', ['Franco Armani', 'Gerónimo Rulli', 'Sergio Romero'], 1],
+  ['sel', '¿Quién era el DT de Argentina campeón del mundo en 1986?', 'Carlos Bilardo', ['César Luis Menotti', 'Alfio Basile', 'Marcelo Bielsa'], 2],
+  ['sel', '¿Quién era el DT de Argentina campeón del mundo en 1978?', 'César Luis Menotti', ['Carlos Bilardo', 'Juan Carlos Lorenzo', 'Daniel Passarella'], 2],
+  ['sel', '¿Qué selección ganó más Mundiales en la historia?', 'Brasil', ['Alemania', 'Italia', 'Argentina'], 1],
+  ['sel', '¿Contra quién le hizo Maradona el famoso "Gol del Siglo" en 1986?', 'Inglaterra', ['Bélgica', 'Alemania', 'Italia'], 2],
+  ['sel', '¿Quién hizo el gol de Argentina en la final de la Copa América 2021?', 'Ángel Di María', ['Lionel Messi', 'Lautaro Martínez', 'Rodrigo De Paul'], 2],
+  ['sel', '¿En qué estadio Argentina le ganó a Brasil la final de la Copa América 2021?', 'Maracaná', ['Morumbí', 'Mineirão', 'Monumental'], 2],
+  ['sel', '¿Quién hizo el gol de Argentina en la final de la Copa América 2024?', 'Lautaro Martínez', ['Julián Álvarez', 'Lionel Messi', 'Ángel Di María'], 2],
+  ['sel', '¿Contra qué selección ganó Argentina la final de la Copa América 2024?', 'Colombia', ['Uruguay', 'Brasil', 'Canadá'], 2],
+  ['sel', '¿Quién es el máximo goleador de la historia de la Selección Argentina?', 'Lionel Messi', ['Gabriel Batistuta', 'Sergio Agüero', 'Diego Maradona'], 1],
+  ['sel', '¿Qué tres países organizan el Mundial 2026?', 'Estados Unidos, México y Canadá', ['Brasil, Argentina y Uruguay', 'España, Portugal y Marruecos', 'Estados Unidos, México y Costa Rica'], 1],
+  ['sel', '¿Cuántas selecciones juegan el Mundial 2026?', '48', ['32', '40', '64'], 2],
+  ['sel', '¿Qué país ganó el primer Mundial, en 1930?', 'Uruguay', ['Argentina', 'Italia', 'Brasil'], 3],
+  ['sel', '¿Quién fue el goleador del Mundial 1978?', 'Mario Kempes', ['Daniel Passarella', 'Leopoldo Luque', 'René Houseman'], 3],
+  ['sel', '¿Quién hizo el gol de Alemania en la final del Mundial 2014 contra Argentina?', 'Mario Götze', ['Thomas Müller', 'Miroslav Klose', 'Toni Kroos'], 3],
+  ['sel', '¿En qué país se jugó el Mundial 2014?', 'Brasil', ['Sudáfrica', 'Alemania', 'Rusia'], 2],
+  ['arg', '¿Qué club tiene más Copas Libertadores en la historia?', 'Independiente', ['Boca Juniors', 'River Plate', 'Peñarol'], 2],
+  ['arg', '¿De qué club es el estadio apodado "La Bombonera"?', 'Boca Juniors', ['River Plate', 'Racing', 'Huracán'], 1],
+  ['arg', '¿Cómo se llama el partido entre Boca y River?', 'Superclásico', ['Clásico de Avellaneda', 'Derbi porteño', 'Clásico rosarino'], 1],
+  ['arg', '¿Qué equipos juegan el Clásico de Avellaneda?', 'Racing e Independiente', ['Lanús y Banfield', 'Boca y River', 'Arsenal y Racing'], 1],
+  ['arg', '¿A qué club le dicen "El Ciclón"?', 'San Lorenzo', ['Huracán', 'Vélez', 'Tigre'], 2],
+  ['arg', '¿En qué año ganó San Lorenzo su primera Copa Libertadores?', '2014', ['2008', '2016', '2002'], 3],
+  ['arg', '¿En qué ciudad se jugó la final de la Libertadores 2018 entre River y Boca?', 'Madrid', ['Buenos Aires', 'Barcelona', 'Asunción'], 2],
+  ['arg', '¿Qué club argentino ganó la Copa Libertadores 2009?', 'Estudiantes de La Plata', ['Boca Juniors', 'Vélez', 'Lanús'], 3],
+  ['arg', '¿Qué equipos juegan el clásico rosarino?', 'Rosario Central y Newell\'s', ['Central Córdoba y Newell\'s', 'Rosario Central y Unión', 'Newell\'s y Colón'], 2],
+  ['arg', '¿A qué club le dicen "Pincharrata"?', 'Estudiantes de La Plata', ['Gimnasia', 'Platense', 'Banfield'], 2],
+  ['arg', '¿Qué club argentino ganó la Copa Sudamericana 2024?', 'Racing', ['Lanús', 'Boca Juniors', 'Defensa y Justicia'], 2],
+  ['arg', '¿A qué club le dicen "La Academia"?', 'Racing', ['Estudiantes', 'River Plate', 'Argentinos Juniors'], 2],
+  ['arg', '¿Contra qué club ganó Vélez la Copa Intercontinental de 1994?', 'Milan', ['Real Madrid', 'Juventus', 'Ajax'], 3],
+  ['arg', '¿Contra qué club ganó Boca la Copa Intercontinental del año 2000?', 'Real Madrid', ['Milan', 'Bayern Múnich', 'Barcelona'], 3],
+  ['arg', '¿En qué barrio está La Bombonera?', 'La Boca', ['Núñez', 'Palermo', 'Barracas'], 1],
+  ['arg', '¿De qué club es el estadio "Más Monumental"?', 'River Plate', ['Boca Juniors', 'Vélez', 'San Lorenzo'], 1],
+  ['arg', '¿A qué club le dicen "El Calamar"?', 'Platense', ['Aldosivi', 'Tigre', 'Sarmiento'], 2],
+  ['arg', '¿A qué club le dicen "El Tiburón"?', 'Aldosivi', ['Talleres', 'Belgrano', 'Tigre'], 3],
+  ['arg', '¿A qué club le dicen "El Globo"?', 'Huracán', ['San Lorenzo', 'Platense', 'Lanús'], 2],
+  ['arg', '¿A qué club le dicen "El Fortín"?', 'Vélez', ['Ferro', 'All Boys', 'Atlanta'], 2],
+  ['est', '¿Cuántos Balones de Oro ganó Lionel Messi?', '8', ['7', '6', '5'], 2],
+  ['est', '¿En qué club de Rosario jugó Messi de chico?', 'Newell\'s', ['Rosario Central', 'Central Córdoba', 'Argentino de Rosario'], 2],
+  ['est', '¿En qué club europeo debutó Messi como profesional?', 'Barcelona', ['PSG', 'Real Madrid', 'Atlético de Madrid'], 1],
+  ['est', '¿Quién es el máximo goleador de la historia de la Champions League?', 'Cristiano Ronaldo', ['Lionel Messi', 'Robert Lewandowski', 'Raúl'], 2],
+  ['est', '¿En qué club de Italia fue ídolo Diego Maradona?', 'Napoli', ['Juventus', 'Roma', 'Milan'], 2],
+  ['est', '¿De qué país es Erling Haaland?', 'Noruega', ['Dinamarca', 'Suecia', 'Alemania'], 2],
+  ['est', '¿En qué club brasileño fue ídolo Pelé?', 'Santos', ['Flamengo', 'Corinthians', 'Palmeiras'], 3],
+  ['est', '¿Cuál es el apodo de Cristiano Ronaldo?', 'CR7', ['El Bicho', 'La Pulga', 'El Fenómeno'], 1],
+  ['est', '¿Cuál es el apodo de Lionel Messi?', 'La Pulga', ['El Pipita', 'El Kun', 'El Apache'], 1],
+  ['est', '¿A quién le dicen "El Kun"?', 'Sergio Agüero', ['Carlos Tevez', 'Gonzalo Higuaín', 'Paulo Dybala'], 1],
+  ['est', '¿A quién le dicen "La Araña"?', 'Julián Álvarez', ['Lautaro Martínez', 'Enzo Fernández', 'Alexis Mac Allister'], 2],
+  ['est', '¿De qué país es Kylian Mbappé?', 'Francia', ['Bélgica', 'Camerún', 'Portugal'], 1],
+  ['est', '¿En qué club de Estados Unidos juega Messi desde 2023?', 'Inter Miami', ['LA Galaxy', 'New York City', 'Orlando City'], 1],
+  ['eur', '¿Qué club ganó más veces la Champions League?', 'Real Madrid', ['Milan', 'Barcelona', 'Bayern Múnich'], 1],
+  ['eur', '¿Cómo se llama el estadio del Real Madrid?', 'Santiago Bernabéu', ['Camp Nou', 'Metropolitano', 'Mestalla'], 1],
+  ['eur', '¿Cómo se llama el estadio del Barcelona?', 'Camp Nou', ['Santiago Bernabéu', 'San Mamés', 'Riazor'], 1],
+  ['eur', '¿Qué club inglés tiene el apodo de "Los Diablos Rojos"?', 'Manchester United', ['Liverpool', 'Arsenal', 'Nottingham Forest'], 2],
+  ['eur', '¿Cómo se llama la liga de primera división de Alemania?', 'Bundesliga', ['Serie A', 'Eredivisie', 'Ligue 1'], 2],
+  ['eur', '¿Qué equipos juegan el "Derbi della Madonnina"?', 'Inter y Milan', ['Roma y Lazio', 'Juventus y Torino', 'Napoli y Roma'], 3],
+  ['eur', '¿Cómo se llama el estadio del Liverpool?', 'Anfield', ['Old Trafford', 'Goodison Park', 'Emirates'], 2],
+  ['eur', '¿En qué ciudad juega la Juventus?', 'Turín', ['Milán', 'Roma', 'Génova'], 2],
+  ['eur', '¿En qué año ganó el PSG su primera Champions League?', '2025', ['2020', '2024', '2023'], 3],
+  ['eur', '¿Cómo se llama el estadio del Manchester United?', 'Old Trafford', ['Anfield', 'Etihad', 'Stamford Bridge'], 2],
+  ['eur', '¿Cómo se llama la primera división de Italia?', 'Serie A', ['LaLiga', 'Premier League', 'Primeira Liga'], 1],
+  ['eur', '¿En qué país juega el Ajax?', 'Países Bajos', ['Bélgica', 'Dinamarca', 'Suiza'], 2],
+  ['reg', '¿Cuántos jugadores tiene cada equipo en la cancha?', '11', ['10', '12', '9'], 1],
+  ['reg', '¿Cuántos minutos dura un partido sin contar el descuento?', '90', ['80', '100', '120'], 1],
+  ['reg', '¿Qué tarjeta significa expulsión?', 'Roja', ['Amarilla', 'Verde', 'Azul'], 1],
+  ['reg', '¿Desde cuántos metros del arco se patea un penal?', '11 metros', ['9 metros', '12 metros', '16 metros'], 2],
+  ['reg', '¿Cuántos cambios puede hacer cada equipo en un partido oficial?', '5', ['3', '4', '6'], 2],
+  ['reg', '¿Qué significa VAR?', 'Árbitro asistente de video', ['Video de alta resolución', 'Verificación automática de reglas', 'Velocidad y alcance del remate'], 2],
+  ['reg', '¿Cuánto dura cada tiempo suplementario?', '15 minutos', ['10 minutos', '20 minutos', '30 minutos'], 3],
+  ['reg', '¿Cuántas tarjetas amarillas en un mismo partido equivalen a una roja?', '2', ['3', '1', '4'], 1],
+  ['sel', '¿Quién hizo el gol del 3 a 2 de Argentina en la final del Mundial 1986?', 'Jorge Burruchaga', ['Jorge Valdano', 'José Luis Brown', 'Diego Maradona'], 3],
+  ['sel', '¿En qué año ganó Argentina su primer Mundial?', '1978', ['1986', '1930', '1966'], 1],
+  ['arg', '¿Qué club fue el primer argentino en ganar la Copa Libertadores, en 1964?', 'Independiente', ['Racing', 'Estudiantes de La Plata', 'Boca Juniors'], 3],
+  ['eur', '¿Qué club ganó la Champions 2005 con la famosa remontada de Estambul?', 'Liverpool', ['Milan', 'Chelsea', 'Barcelona'], 3],
+  ['est', '¿Quién ganó el Balón de Oro 2018, cortando la racha de Messi y Cristiano?', 'Luka Modrić', ['Antoine Griezmann', 'Mohamed Salah', 'Kylian Mbappé'], 3],
+  ['reg', '¿Cuánto mide de ancho un arco reglamentario?', '7,32 metros', ['6 metros', '8,50 metros', '7 metros'], 3],
+  ['reg', '¿A qué distancia tienen que pararse los rivales en un tiro libre?', '9,15 metros', ['7 metros', '11 metros', '5 metros'], 3],
+];
+const CATS_TRIVIA = { todas: ['Todas mezcladas', '🎲'], sel: ['Selección y Mundiales', '🇦🇷'], arg: ['Fútbol argentino', '🏟️'],
+                      est: ['Estrellas', '⭐'], eur: ['Europa', '🌍'], reg: ['Reglamento', '📏'] };
+const NIVELES_TRIVIA = {
+  facil: { nombre: 'Fácil', emoji: '🟢', segundos: 20, multi: 1, usa: [1], relleno: [2] },
+  medio: { nombre: 'Medio', emoji: '🟡', segundos: 15, multi: 1.5, usa: [2], relleno: [1, 3] },
+  dificil: { nombre: 'Difícil', emoji: '🔴', segundos: 10, multi: 2, usa: [3], relleno: [2] },
+};
+let trivia = null;
+function mezclar(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
+function vistaTrivia() {
+  clearInterval(trivia && trivia.reloj);
+  const records = leer('tiki_trivia_records', {});
+  const nivel = leer('tiki_trivia_nivel', 'facil');
+  const nv = NIVELES_TRIVIA[nivel];
+  $('vista').innerHTML = volver('Trivia') + `<main>
+    <section class="tarjeta pad" style="text-align:center">
+      <div style="font-size:40px">🧠⚽</div>
+      <h2 style="margin:6px 0 4px;font-size:20px">Trivia Tiki Data</h2>
+      <p class="nota-pie" style="margin:0">10 preguntas · más rápido, más puntos</p></section>
+    <section class="tarjeta pad"><b style="font-size:14px">Elegí el nivel</b>
+      <div class="niveles-trivia">${Object.entries(NIVELES_TRIVIA).map(([k, n]) => `<button class="nivel-trivia ${k === nivel ? 'on' : ''}" data-nivel="${k}">${n.emoji} ${n.nombre}<small>${n.segundos} seg${n.multi > 1 ? ' · x' + n.multi + ' pts' : ''}</small></button>`).join('')}</div></section>
+    <div class="cats-trivia">${Object.entries(CATS_TRIVIA).map(([k, [n, e]]) => `<button class="tarjeta cat-trivia" data-cat="${k}">
+      <span style="font-size:26px">${e}</span><b>${n}</b><small>${records[k + '_' + nivel] ? 'Récord ' + nv.nombre.toLowerCase() + ': ' + records[k + '_' + nivel] + ' pts' : 'Sin récord en ' + nv.nombre.toLowerCase()}</small></button>`).join('')}</div></main>`;
+  document.querySelectorAll('[data-nivel]').forEach(b => b.onclick = () => { guardar('tiki_trivia_nivel', b.dataset.nivel); vistaTrivia(); });
+  document.querySelectorAll('[data-cat]').forEach(b => b.onclick = () => empezarTrivia(b.dataset.cat, nivel));
+}
+function empezarTrivia(cat, nivel) {
+  const nv = NIVELES_TRIVIA[nivel] || NIVELES_TRIVIA.facil;
+  const pool = PREGUNTAS.filter(p => cat === 'todas' || p[0] === cat);
+  // primero preguntas del nivel elegido; si no alcanzan, se completa con las del nivel de al lado
+  const elegidas = mezclar(pool.filter(p => nv.usa.includes(p[4]))).concat(mezclar(pool.filter(p => nv.relleno.includes(p[4])))).slice(0, 10);
+  trivia = { cat, nivel, nv, preguntas: mezclar(elegidas), i: 0, puntos: 0, aciertos: 0, racha: 0, reloj: null };
+  mostrarPregunta();
+}
+function mostrarPregunta() {
+  const t = trivia, p = t.preguntas[t.i];
+  const opciones = mezclar([p[2]].concat(p[3]));
+  const total = t.nv.segundos; let quedan = total;
+  $('vista').innerHTML = volver('Trivia', '#/trivia') + `<main>
+    <div style="display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:700;color:var(--suave)">
+      <span>${t.nv.emoji} ${t.nv.nombre} · Pregunta ${t.i + 1} de ${t.preguntas.length}</span><span>${t.racha >= 2 ? '🔥 Racha ' + t.racha + ' · ' : ''}${t.puntos} pts</span></div>
+    <div class="barra-tiempo"><div id="tiempo"></div></div>
+    <section class="tarjeta pad"><small style="color:var(--azul);font-weight:800">${esc(CATS_TRIVIA[p[0]][1] + ' ' + CATS_TRIVIA[p[0]][0].toUpperCase())}</small>
+      <h2 style="margin:8px 0 0;font-size:18px;line-height:1.35">${esc(p[1])}</h2></section>
+    <div style="display:flex;flex-direction:column;gap:10px">${opciones.map(o => `<button class="opcion-trivia" data-o="${esc(o)}">${esc(o)}</button>`).join('')}</div>
+    <div id="segundos" style="text-align:center;font-weight:800;font-size:22px;font-family:Montserrat">${total}</div></main>`;
+  const responder = (elegida) => {
+    clearInterval(t.reloj);
+    const bien = elegida === p[2];
+    document.querySelectorAll('.opcion-trivia').forEach(b => {
+      b.disabled = true;
+      if (b.dataset.o === p[2]) b.classList.add('bien');
+      else if (b.dataset.o === elegida) b.classList.add('mal');
+    });
+    if (bien) { t.racha++; t.aciertos++; t.puntos += Math.round((100 + quedan * 10 + (t.racha >= 3 ? 50 : 0)) * t.nv.multi); } else t.racha = 0;
+    $('segundos').innerHTML = bien ? '¡Bien! ✅' : (elegida ? 'Era: ' + esc(p[2]) : '⏰ Se terminó el tiempo');
+    setTimeout(() => { t.i++; if (t.i < t.preguntas.length) mostrarPregunta(); else finTrivia(); }, 1600);
+  };
+  document.querySelectorAll('.opcion-trivia').forEach(b => b.onclick = () => responder(b.dataset.o));
+  t.reloj = setInterval(() => {
+    if (!$('segundos')) { clearInterval(t.reloj); return; }
+    quedan--; $('segundos').textContent = quedan; $('tiempo').style.width = (quedan / total * 100) + '%';
+    if (quedan <= 0) responder(null);
+  }, 1000);
+}
+function finTrivia() {
+  const t = trivia, records = leer('tiki_trivia_records', {});
+  const clave = t.cat + '_' + t.nivel;
+  const nuevo = t.puntos > (records[clave] || 0);
+  if (nuevo) { records[clave] = t.puntos; guardar('tiki_trivia_records', records); }
+  const frase = t.aciertos === 10 ? '¡Perfecto! Sos un crack 🏆' : t.aciertos >= 7 ? '¡Muy bien! ⭐' : t.aciertos >= 4 ? 'Nada mal 💪' : 'A seguir practicando ⚽';
+  const texto = `Hice ${t.puntos} puntos (${t.aciertos}/10) en la Trivia de Tiki Data — ${CATS_TRIVIA[t.cat][0]}, nivel ${t.nv.nombre}. ¿Me superás? ${location.origin}/#/trivia`;
+  $('vista').innerHTML = volver('Trivia', '#/trivia') + `<main>
+    <section class="tarjeta pad" style="text-align:center">
+      <div style="font-size:44px">${t.aciertos >= 7 ? '🏆' : '⚽'}</div>
+      <h2 style="margin:6px 0;font-size:22px">${frase}</h2>
+      <div style="font-family:Montserrat;font-size:40px;font-weight:900;color:var(--azul)">${t.puntos} pts</div>
+      <p style="margin:4px 0 0;color:var(--suave)">${t.nv.emoji} Nivel ${t.nv.nombre} · ${t.aciertos} de 10 correctas${nuevo ? ' · <b style="color:var(--verde)">¡Nuevo récord!</b>' : ''}</p></section>
+    <button class="boton" id="otraVez">Jugar otra vez</button>
+    <a class="boton" style="background:#25D366;color:#fff" href="https://wa.me/?text=${encodeURIComponent(texto)}" target="_blank" rel="noopener">Desafiar a un amigo por WhatsApp</a>
+    <a class="boton sec" href="#/trivia">Elegir otra categoría</a></main>`;
+  $('otraVez').onclick = () => empezarTrivia(t.cat, t.nivel);
 }
 
 /* ---------- En vivo gratis: transmisiones oficiales de YouTube ---------- */
@@ -2931,6 +3113,7 @@ function ruta() {
   if (v === 'comparar') return vistaComparar(a, b);
   if (v === 'favoritos') return vistaFavoritos();
   if (v === 'envivo') return vistaEnVivo(a);
+  if (v === 'trivia') return vistaTrivia();
   if (v === 'club') return vistaClub(a);
   if (v === 'ficha') return vistaFicha(a);
   vistaInicio();
