@@ -775,10 +775,26 @@ def _estado_liga(c):
 # (gratis: 100 búsquedas por día). La clave va en la variable YOUTUBE_API_KEY.
 # ---------------------------------------------------------------------------
 YOUTUBE_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
-CANALES_CONFIABLES = ["espn", "laliga", "premier league", "dazn", "tnt sports", "fox sports", "cbs sports", "bein",
-                      "uefa", "serie a", "bundesliga", "ligue 1", "movistar", "tyc sports", "nbc sports", "sky sports",
-                      "telemundo", "univision", "disney", "star+", "conmebol", "afa", "real madrid", "fc barcelona"]
+# Solo canales OFICIALES (nombre exacto del canal en YouTube). Si el video no es de uno de estos,
+# no se muestra: aparece el botón para buscarlo en YouTube.
+CANALES_OFICIALES = {
+    # Argentina y Sudamérica
+    "espn fans", "espn argentina", "espn deportes", "espn brasil", "espn fc", "espn", "espn america",
+    "tnt sports argentina", "tnt sports", "tnt sports brasil", "tyc sports", "dsports", "directv sports",
+    "fox sports argentina", "fox sports", "fox sports mx", "disney", "star", "liga profesional de futbol",
+    "liga profesional", "afa", "seleccion argentina", "copa argentina", "conmebol", "conmebol libertadores",
+    "conmebol sudamericana", "conmebol tv", "ge", "sportv", "premiere", "cazetv", "canal goat", "globo esporte",
+    "brasileirao", "liga 1", "liga auf uruguaya", "auf tv", "win sports", "liga betplay dimayor",
+    # Europa
+    "premier league", "nbc sports", "sky sports", "sky sports football", "sky sports premier league",
+    "laliga ea sports", "laliga", "laliga hypermotion", "movistar plus", "dazn", "dazn espana", "dazn football",
+    "serie a", "bundesliga", "ligue 1 mcdonald s", "ligue 1", "liga portugal", "eredivisie", "espn nl",
+    "uefa", "cbs sports golazo", "cbs sports", "bein sports", "bein sports usa", "paramount", "tnt sports uk",
+    "efl", "sky bet championship", "telemundo deportes", "univision deportes", "tudn", "fifa", "fifa world cup",
+}
+
 _videos = {}
+_sin_video = {}
 
 
 def datos_resumen(id_partido):
@@ -791,6 +807,9 @@ def datos_resumen(id_partido):
     if id_partido in _videos:
         respuesta["video"] = _videos[id_partido]
         return respuesta
+    if time.time() - _sin_video.get(id_partido, 0) < 3 * 3600:
+        return respuesta  # ya se buscó hace poco y no estaba: no gastar otra búsqueda (hay 100 por día)
+    _sin_video[id_partido] = time.time()
     desde = (date.fromisoformat(p["fecha"]) - timedelta(days=1)).isoformat() + "T00:00:00Z"
     try:
         r = requests.get("https://www.googleapis.com/youtube/v3/search", timeout=12, params={
@@ -808,15 +827,20 @@ def datos_resumen(id_partido):
         pts += 2 if any(w in tit for w in nl.split() if len(w) > 3) else 0
         pts += 2 if any(w in tit for w in nv.split() if len(w) > 3) else 0
         pts += 2 if any(k in tit for k in (" resumen ", " highlights ", " goles ", " goals ")) else 0
-        pts += 3 if any(" " + c + " " in canal for c in CANALES_CONFIABLES) else 0
         return pts
+
+    def oficial(it):
+        canal = normalizar(it.get("snippet", {}).get("channelTitle")).strip()
+        # canal de la lista oficial, o el canal oficial de uno de los dos clubes (nombre exacto)
+        return canal in CANALES_OFICIALES or canal in (nl.strip(), nv.strip())
+    items = [it for it in items if oficial(it)]
     if items:
         mejor = max(items, key=puntaje)
         s = mejor.get("snippet", {})
         miniaturas = s.get("thumbnails", {})
         foto = (miniaturas.get("maxres") or miniaturas.get("high") or miniaturas.get("medium") or miniaturas.get("default") or {}).get("url", "")
         vid = (mejor.get("id") or {}).get("videoId")
-        if vid and puntaje(mejor) >= 4:
+        if vid and puntaje(mejor) >= 4:  # tiene que nombrar a los equipos y ser un resumen
             _videos[id_partido] = {"id": vid, "titulo": s.get("title", ""), "canal": s.get("channelTitle", ""),
                                   "portada": foto or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg",
                                   "enlace": f"https://www.youtube.com/watch?v={vid}"}
