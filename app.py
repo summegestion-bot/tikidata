@@ -1505,50 +1505,117 @@ def es_argentino(id_txt):
     return False
 
 
+def I(fundacion, estadio, ubicacion, apodo, capacidad=None):
+    return {"fundacion": fundacion, "estadio": estadio, "ubicacion": ubicacion, "apodo": apodo, "capacidad": capacidad}
+
+
+# Datos de los clubes argentinos cargados a mano y revisados uno por uno.
+# Si un dato no es seguro, no se pone (mejor nada que algo equivocado).
+CLUBES_AR = {
+    "boca juniors": I(1905, "Alberto J. Armando (La Bombonera)", "La Boca, Buenos Aires", "Xeneize", 57200),
+    "river plate": I(1901, "Más Monumental", "Núñez, Buenos Aires", "Millonario", 84500),
+    "racing": I(1903, "Presidente Perón (El Cilindro)", "Avellaneda, Buenos Aires", "La Academia", 51000),
+    "independiente": I(1905, "Libertadores de América - Ricardo Enrique Bochini", "Avellaneda, Buenos Aires", "Rojo"),
+    "san lorenzo": I(1908, "Pedro Bidegain (Nuevo Gasómetro)", "Bajo Flores, Buenos Aires", "Ciclón", 47900),
+    "huracan": I(1908, "Tomás Adolfo Ducó", "Parque Patricios, Buenos Aires", "Globo", 48300),
+    "velez": I(1910, "José Amalfitani", "Liniers, Buenos Aires", "Fortín", 49500),
+    "estudiantes": I(1905, "Jorge Luis Hirschi (UNO)", "La Plata, Buenos Aires", "Pincharrata"),
+    "gimnasia": I(1887, "Juan Carmelo Zerillo (El Bosque)", "La Plata, Buenos Aires", "Lobo"),
+    "lanus": I(1915, "Ciudad de Lanús - Néstor Díaz Pérez (La Fortaleza)", "Lanús, Buenos Aires", "Granate", 47000),
+    "banfield": I(1896, "Florencio Sola", "Banfield, Buenos Aires", "Taladro", 34900),
+    "argentinos juniors": I(1904, "Diego Armando Maradona", "La Paternal, Buenos Aires", "Bicho"),
+    "rosario central": I(1889, "Gigante de Arroyito", "Rosario, Santa Fe", "Canalla", 41600),
+    "newell": I(1903, "Marcelo Bielsa (Coloso del Parque)", "Rosario, Santa Fe", "Lepra", 42000),
+    "newells": I(1903, "Marcelo Bielsa (Coloso del Parque)", "Rosario, Santa Fe", "Lepra", 42000),
+    "talleres": I(1913, "Mario Alberto Kempes", "Córdoba", "Matador", 57000),
+    "belgrano": I(1905, "Julio César Villagra (Gigante de Alberdi)", "Córdoba", "Pirata"),
+    "instituto": I(1918, "Juan Domingo Perón (Monumental de Alta Córdoba)", "Córdoba", "La Gloria"),
+    "godoy cruz": I(1921, "Malvinas Argentinas", "Mendoza", "Tomba"),
+    "independiente rivadavia": I(1913, "Bautista Gargantini", "Mendoza", "Lepra mendocina"),
+    "gimnasia mendoza": I(1908, "Víctor Antonio Legrotaglie", "Mendoza", "Lobo mendocino"),
+    "gimnasia y esgrima mendoza": I(1908, "Víctor Antonio Legrotaglie", "Mendoza", "Lobo mendocino"),
+    "atletico tucuman": I(1902, "Monumental José Fierro", "San Miguel de Tucumán", "Decano", 35200),
+    "central cordoba": I(1919, "Único Madre de Ciudades", "Santiago del Estero", "Ferroviario", 30000),
+    "defensa y justicia": I(1935, "Norberto Tomaghello", "Florencio Varela, Buenos Aires", "Halcón"),
+    "platense": I(1905, "Ciudad de Vicente López", "Vicente López, Buenos Aires", "Calamar"),
+    "tigre": I(1902, "José Dellagiovanna", "Victoria, Buenos Aires", "Matador de Victoria", 26200),
+    "sarmiento": I(1911, "Eva Perón", "Junín, Buenos Aires", "Verde"),
+    "barracas central": I(1904, "Claudio Chiqui Tapia", "Barracas, Buenos Aires", "Guapo"),
+    "riestra": I(1931, "Guillermo Laza", "Nueva Pompeya, Buenos Aires", "Malevo"),
+    "aldosivi": I(1913, "José María Minella", "Mar del Plata, Buenos Aires", "Tiburón", 35000),
+    "union": I(1907, "15 de Abril", "Santa Fe", "Tatengue", 28000),
+    "san martin de san juan": I(1907, "Ingeniero Hilario Sánchez", "San Juan", "Verdinegro"),
+    "san martin sj": I(1907, "Ingeniero Hilario Sánchez", "San Juan", "Verdinegro"),
+    "san martin s j": I(1907, "Ingeniero Hilario Sánchez", "San Juan", "Verdinegro"),
+    "estudiantes rio cuarto": I(1912, "Ciudad de Río Cuarto (Antonio Candini)", "Río Cuarto, Córdoba", "León del Imperio"),
+    "san martin de tucuman": I(1909, "La Ciudadela", "San Miguel de Tucumán", "Santo"),
+    "colon": I(1905, "Brigadier General Estanislao López (Cementerio de los Elefantes)", "Santa Fe", "Sabalero"),
+    "chacarita": I(1906, "Chacarita Juniors", "Villa Maipú, San Martín", "Funebrero"),
+    "quilmes": I(1887, "Centenario", "Quilmes, Buenos Aires", "Cervecero"),
+    "ferro carril oeste": I(1904, "Arquitecto Ricardo Etcheverri", "Caballito, Buenos Aires", "Verdolaga"),
+    "atlanta": I(1904, "Don León Kolbowski", "Villa Crespo, Buenos Aires", "Bohemio"),
+    "all boys": I(1913, "Islas Malvinas", "Floresta, Buenos Aires", "Albo"),
+    "nueva chicago": I(1911, "Republica de Mataderos", "Mataderos, Buenos Aires", "Torito"),
+    "almirante brown": I(1922, "Fragata Presidente Sarmiento", "Isidro Casanova, Buenos Aires", "Mirasol"),
+    "temperley": I(1912, "Alfredo Beranger", "Temperley, Buenos Aires", "Gasolero"),
+    "patronato": I(1914, "Presbítero Bartolomé Grella", "Paraná, Entre Ríos", "Santo"),
+    "arsenal sarandi": I(1957, "Julio Humberto Grondona", "Sarandí, Buenos Aires", "Arse"),
+    "arsenal de sarandi": I(1957, "Julio Humberto Grondona", "Sarandí, Buenos Aires", "Arse"),
+}
+_CLAVES_AR = sorted(CLUBES_AR, key=len, reverse=True)
+# palabras que no sirven para comparar nombres de estadios
+_COMUNES_ESTADIO = {"estadio", "stadium", "stadion", "club", "municipal", "ciudad", "arena", "park", "ground", "nuevo", "nueva"}
+
+
+def info_club_ar(nombres):
+    for n in nombres:
+        tn = normalizar(n)
+        for clave in _CLAVES_AR:
+            if all(" " + w + " " in tn for w in clave.split() if w not in ("de", "del", "y", "la")):
+                return CLUBES_AR[clave]
+    return None
+
+
+def _mismo_estadio(a, b):
+    """True si los dos nombres de estadio comparten alguna palabra importante (para no mostrar fotos de otro estadio)."""
+    pa = {w for w in normalizar(a).split() if len(w) > 3 and w not in _COMUNES_ESTADIO}
+    pb = {w for w in normalizar(b).split() if len(w) > 3 and w not in _COMUNES_ESTADIO}
+    return bool(pa & pb)
+
+
 def datos_club_extra(id_equipo):
-    """Estadio, foto, camisetas e historia: TheSportsDB + Wikipedia. Se carga después."""
-    from concurrent.futures import ThreadPoolExecutor
-    if str(id_equipo).startswith("h"):
-        n = hl_equipo(str(id_equipo))["nombre"]
+    """Solo datos confirmados: los argentinos cargados a mano, los de football-data para el resto.
+    La foto del estadio y el plantel de TheSportsDB se usan solo si se comprueba que son del mismo club."""
+    id_txt = str(id_equipo)
+    if id_txt.startswith("h"):
+        n = hl_equipo(id_txt)["nombre"]
         t = {"shortName": n, "name": n, "squad": None}
     else:
         t = api(f"/teams/{id_equipo}", ttl=86400)
     nombres = [t.get("shortName"), t.get("name")]
-    pais = "Argentina" if es_argentino(str(id_equipo)) else ""
+    argentino = es_argentino(id_txt)
     res = {"capacidad": None, "ubicacion": "", "fundacion": None, "estadio": "", "descripcion": "",
            "fotoEstadio": "", "camisetas": [], "fotos": {}, "apodo": "", "dt": "", "wikipedia": ""}
-    with ThreadPoolExecutor(max_workers=2) as ex:
-        f_wiki = ex.submit(datos_wiki, nombres, pais)
-        extra = buscar_equipo_tsdb(nombres)
-        venue, kits, jugadores = {}, [], []
-        if extra:
-            id_t, id_v = extra.get("idTeam"), extra.get("idVenue")
-            with ThreadPoolExecutor(max_workers=3) as ex2:
-                f_venue = ex2.submit(tsdb, f"/lookupvenue.php?id={id_v}") if id_v else None
-                f_jug = ex2.submit(tsdb, f"/lookup_all_players.php?id={id_t}") if id_t and t.get("squad") is None else None
-                venue = (primera_lista(f_venue.result()) or [{}])[0] if f_venue else {}
-                jugadores = primera_lista(f_jug.result()) if f_jug else []
-        try:
-            w = f_wiki.result(timeout=20) or {}
-        except Exception:
-            w = {}
-    extra = extra or {}
-    # Datos: Wikipedia en español primero (nombres en castellano), si no TheSportsDB
-    es = w.get("idioma") == "es"
-    res["estadio"] = (w.get("estadio") if es else "") or extra.get("strStadium") or w.get("estadio") or ""
-    res["ubicacion"] = (w.get("ubicacion") if es else "") or extra.get("strLocation") or venue.get("strLocation") or w.get("ubicacion") or ""
-    res["capacidad"] = extra.get("intStadiumCapacity") or venue.get("intCapacity") or w.get("capacidad")
-    res["fundacion"] = extra.get("intFormedYear") or w.get("fundacion")
-    res["apodo"], res["dt"], res["wikipedia"] = w.get("apodo", ""), w.get("dt", ""), w.get("pagina", "")
-    res["descripcion"] = (w.get("descripcion") or extra.get("strDescriptionES") or extra.get("strDescriptionEN") or "")[:700]
-    res["fotoEstadio"] = (venue.get("strThumb") or extra.get("strStadiumThumb") or w.get("fotoEstadio")
-                          or venue.get("strFanart1") or extra.get("strFanart1") or "")
-    # Camisetas: el diseño tradicional del club, dibujado pixelado
-    res["camisetas"] = camisetas_pixel(nombres, bool(pais), t.get("clubColors") or "", w.get("coloresKit"))
-    if t.get("squad") is None:  # equipos de Highlightly: plantel desde TheSportsDB
+    info = info_club_ar(nombres) if argentino else None
+    if info:
+        res.update(info)
+    estadio_ref = (info or {}).get("estadio") or t.get("venue") or ""
+    extra = buscar_equipo_tsdb(nombres) or {}
+    pais_ok = (not argentino) or (extra.get("strCountry") or "").lower() == "argentina"
+    verificado = bool(extra) and pais_ok and estadio_ref and _mismo_estadio(extra.get("strStadium") or "", estadio_ref)
+    if verificado:
+        venue = {}
+        if extra.get("idVenue"):
+            venue = (primera_lista(tsdb(f"/lookupvenue.php?id={extra['idVenue']}")) or [{}])[0]
+        res["fotoEstadio"] = venue.get("strThumb") or extra.get("strStadiumThumb") or ""
+        if not res["capacidad"]:
+            res["capacidad"] = extra.get("intStadiumCapacity") or venue.get("intCapacity")
+    if t.get("squad") is None and extra and pais_ok and argentino and extra.get("idTeam"):
+        jugadores = primera_lista(tsdb(f"/lookup_all_players.php?id={extra['idTeam']}"))
         res["plantel"] = [{"id": jp.get("idPlayer"), "nombre": jp.get("strPlayer") or "", "posicion": jp.get("strPosition") or "",
                            "nacimiento": jp.get("dateBorn") or "", "nacionalidad": jp.get("strNationality") or "",
                            "foto": ""} for jp in jugadores if jp.get("strPlayer")]
+    res["camisetas"] = camisetas_pixel(nombres, argentino, t.get("clubColors") or "")
     return res
 
 
@@ -2024,7 +2091,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .kit > div { position:absolute; overflow:hidden; }
 .camisetas figure:has(.kit) { background:#fff; } .camisetas figure:has(.kit) figcaption { color:#3A4658; }
 .kit-svg { width:100%; height:110px; display:block; }
-.camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; background:#fff; border-radius:8px; }
+.camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
 .kit.pix > div img { image-rendering:pixelated; }
 .kit .la { left:0; top:0; width:31px; height:59px; } .kit .b { left:31px; top:0; width:38px; height:59px; }
@@ -2598,7 +2665,7 @@ function dibujarClub(c) {
         ${orden.filter(g => grupos[g]).map(g => `<div style="padding:10px 12px 2px;font-size:11px;font-weight:800;letter-spacing:.6px;color:var(--suave)">${g.toUpperCase()}</div>` +
           grupos[g].map(j => `<a class="jug" style="grid-template-columns:40px 1fr auto" href="#/ficha/${encodeURIComponent(j.nombre)}">${caraHTML(j)}<span><b style="font-size:14px">${esc(j.nombre)}</b><br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small></span><small style="color:var(--suave)">${edad(j.nacimiento)}</small></a>`).join('')).join('')}</section>` : ''}
       ${c.descripcion ? `<section class="tarjeta pad"><h2 style="margin:0 0 8px;font-size:15px">Historia</h2><p style="margin:0;font-size:13px;line-height:1.55;color:#C7D2E0">${esc(c.descripcion)}…</p></section>` : ''}
-      <p class="nota-pie">Datos de football-data.org, Highlightly, TheSportsDB y Wikipedia.</p>
+      <p class="nota-pie">Datos de football-data.org y Highlightly. Clubes argentinos: datos revisados por Tiki Data.</p>
     </main>`;
   c.plantel.forEach(j => { if (j.foto) FOTOS[j.nombre] = j.foto; });
   cargarFotos($('vista'));
@@ -2658,10 +2725,7 @@ function camisetaPixel(x) {
     else if ([[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]].some(([a, b]) => celdas[(cx + a) + ',' + (cy + b)])) color = '#111';
     if (color) r += `<rect x="${cx}" y="${cy}" width="1" height="1" fill="${color}"/>`;
   }
-  // cuadrícula finita, como en papel cuadriculado
-  let grilla = '';
-  for (let i = 1; i < W; i++) grilla += `<line x1="${i}" y1="0" x2="${i}" y2="${H}"/><line x1="0" y1="${i}" x2="${W}" y2="${i}"/>`;
-  return `<svg class="kit-pix" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges" role="img">${r}<g stroke="rgba(0,0,0,.18)" stroke-width=".05">${grilla}</g></svg>`;
+  return `<svg class="kit-pix" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges" role="img">${r}</svg>`;
 }
 function camisetaDibujo(k) {
   if (k.pix) return camisetaPixel(k.pix);
