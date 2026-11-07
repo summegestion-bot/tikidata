@@ -2285,7 +2285,8 @@ const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
 const MESES_L = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-const $ = (id) => document.getElementById(id);
+// Si la pantalla ya cambió mientras se cargaban datos, devuelve un elemento suelto (no rompe nada)
+const $ = (id) => document.getElementById(id) || document.createElement('div');
 const esc = (t) => String(t ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const hoyISO = () => { const d = new Date(); return new Date(d.getTime() - d.getTimezoneOffset()*60000).toISOString().slice(0,10); };
 const leer = (k, def) => { try { return JSON.parse(localStorage.getItem(k)) ?? def; } catch (e) { return def; } };
@@ -2298,10 +2299,20 @@ const ICON = {
 };
 const svg = (d, s=22, extra='') => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ${extra} aria-hidden="true"><path d="${d}"/></svg>`;
 
-async function pedir(ruta) {
-  const r = await fetch(ruta);
-  const d = await r.json();
-  if (!r.ok) throw new Error(d.error || 'Error desconocido');
+// Pide datos al servidor. Si el servidor se está despertando o falla un momento, reintenta solo (hasta 4 veces).
+async function pedir(ruta, intento = 0) {
+  let r, d;
+  try {
+    r = await fetch(ruta);
+    d = await r.json();
+  } catch (e) {
+    if (intento < 4) { await new Promise(ok => setTimeout(ok, 1500 * (intento + 1))); return pedir(ruta, intento + 1); }
+    throw new Error('No hay conexión con Tiki Data. Probá de nuevo en un ratito.');
+  }
+  if (!r.ok) {
+    if (r.status >= 500 && intento < 2) { await new Promise(ok => setTimeout(ok, 2000)); return pedir(ruta, intento + 1); }
+    throw new Error(d.error || 'Error desconocido');
+  }
   return d;
 }
 function escudo(t, cls='esc') {
@@ -2620,7 +2631,7 @@ function mostrarPregunta() {
   };
   document.querySelectorAll('.opcion-trivia').forEach(b => b.onclick = () => responder(b.dataset.o));
   t.reloj = setInterval(() => {
-    if (!$('segundos')) { clearInterval(t.reloj); return; }
+    if (!document.getElementById('segundos')) { clearInterval(t.reloj); return; }
     quedan--; $('segundos').textContent = quedan; $('tiempo').style.width = (quedan / total * 100) + '%';
     if (quedan <= 0) responder(null);
   }, 1000);
