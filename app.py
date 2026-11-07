@@ -1610,11 +1610,6 @@ def datos_club_extra(id_equipo):
         res["fotoEstadio"] = venue.get("strThumb") or extra.get("strStadiumThumb") or ""
         if not res["capacidad"]:
             res["capacidad"] = extra.get("intStadiumCapacity") or venue.get("intCapacity")
-    if t.get("squad") is None and extra and pais_ok and argentino and extra.get("idTeam"):
-        jugadores = primera_lista(tsdb(f"/lookup_all_players.php?id={extra['idTeam']}"))
-        res["plantel"] = [{"id": jp.get("idPlayer"), "nombre": jp.get("strPlayer") or "", "posicion": jp.get("strPosition") or "",
-                           "nacimiento": jp.get("dateBorn") or "", "nacionalidad": jp.get("strNationality") or "",
-                           "foto": ""} for jp in jugadores if jp.get("strPlayer")]
     res["camisetas"] = camisetas_pixel(nombres, argentino, t.get("clubColors") or "")
     return res
 
