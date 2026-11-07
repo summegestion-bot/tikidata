@@ -2988,44 +2988,58 @@ function camisetaWiki(k) {
   }).join('');
   return `<div class="kit pix" role="img" aria-label="Camiseta ${esc(k.tipo)}" style="height:${alto || 135}px">${partes}</div>`;
 }
-// Camiseta pixel art (16 x 16 cuadraditos), con el diseño tradicional del club
+// Camiseta pixel art (20 x 20 cuadraditos) con sombras, cuello en V y puños
 function camisetaPixel(x) {
-  const W = 16, H = 16, celdas = {};
+  const W = 20, H = 20, celdas = {};
   const pon = (cx, cy, t) => { celdas[cx + ',' + cy] = t; };
-  for (let cx = 2; cx <= 13; cx++) if (cx < 6 || cx > 9) pon(cx, 2, 'm');      // hombros
-  pon(6, 2, 'k'); pon(9, 2, 'k');                                              // cuello
-  for (let cy = 3; cy <= 5; cy++) for (let cx = 1; cx <= 14; cx++) pon(cx, cy, cx < 4 || cx > 11 ? 'm' : 'b');
-  pon(7, 3, 'k'); pon(8, 3, 'k');
-  for (let cx = 1; cx <= 14; cx++) pon(cx, 6, cx < 4 || cx > 11 ? 'p' : 'b');  // puños
-  for (let cy = 7; cy <= 14; cy++) for (let cx = 4; cx <= 11; cx++) pon(cx, cy, 'b');
+  // mangas (en diagonal) y hombros
+  const mangaIzq = { 2: [3, 4], 3: [2, 4], 4: [1, 4], 5: [1, 4], 6: [1, 4], 7: [1, 4] };
+  Object.entries(mangaIzq).forEach(([cy, [a, b]]) => { for (let cx = a; cx <= b; cx++) { pon(cx, +cy, +cy === 7 ? 'p' : 'm'); pon(19 - cx, +cy, +cy === 7 ? 'p' : 'm'); } });
+  for (let cy = 2; cy <= 18; cy++) for (let cx = 5; cx <= 14; cx++) pon(cx, cy, 'b');
+  // cuello en V
+  [[7, 2], [8, 2], [11, 2], [12, 2], [8, 3], [11, 3], [9, 4], [10, 4]].forEach(([cx, cy]) => pon(cx, cy, 'k'));
+  delete celdas['9,2']; delete celdas['10,2']; delete celdas['9,3']; delete celdas['10,3'];
   const c1 = x.c1, c2 = x.c2, c3 = x.c3 || x.c2;
   const cuerpo = (cx, cy) => {
-    const bx = cx - 4, by = cy - 3;
+    const bx = cx - 5, by = cy - 2;
     switch (x.p) {
-      case 'franja': return by >= 4 && by <= 6 ? c2 : c1;
-      case 'banda': return Math.abs(bx - by * 7 / 11) <= 0.9 ? c2 : c1;
-      case 'rayas': return (bx < 4 ? bx : 7 - bx) % 2 === 0 ? c1 : c2;  // simétrica
+      case 'franja': return by >= 6 && by <= 8 ? c2 : c1;
+      case 'banda': return Math.abs(bx - by * 9 / 16) <= 1.1 ? c2 : c1;
+      case 'rayas': return (bx < 5 ? bx : 9 - bx) % 2 === 0 ? c1 : c2;
       case 'rayas3': return [c1, c2, c3][bx % 3];
-      case 'mitad': return bx < 4 ? c1 : c2;
+      case 'mitad': return bx < 5 ? c1 : c2;
       case 'aros': return Math.floor(by / 2) % 2 === 0 ? c1 : c2;
-      case 'centro': return (x.ancho ? bx >= 2 && bx <= 5 : bx >= 3 && bx <= 4) ? c2 : c1;
-      case 'diag': return bx + by * 8 / 12 < 7 ? c1 : c2;
+      case 'centro': return (x.ancho ? bx >= 3 && bx <= 6 : bx >= 4 && bx <= 5) ? c2 : c1;
+      case 'diag': return bx + by * 10 / 17 < 9 ? c1 : c2;
       case 'cuadros': return (bx + by) % 2 === 0 ? c1 : c2;
-      case 'v': { const d = Math.min(bx, 7 - bx); return (by === d || by === d + 1) && by <= 4 ? c2 : c1; }
+      case 'v': { const d = Math.min(bx, 9 - bx); return (by === d || by === d + 1) && by <= 5 ? c2 : c1; }
       default: return c1;
     }
   };
-  const manga = (cx, cy) => x.p === 'aros' ? (Math.floor((cy - 3) / 2) % 2 === 0 ? c1 : c2) : (x.m || (x.p === 'mitad' ? (cx < 8 ? c1 : c2) : c1));
+  const manga = (cx, cy) => x.p === 'aros' ? (Math.floor((cy - 2) / 2) % 2 === 0 ? c1 : c2) : (x.m || (x.p === 'mitad' ? (cx < 10 ? c1 : c2) : c1));
   const detalle = x.k || (x.p === 'liso' ? c2 : (x.m && x.m !== c1 ? x.m : c2));
+  // sombras: oscurece o aclara un color
+  const tono = (hex, f) => {
+    let h = String(hex).replace('#', ''); if (h.length === 3) h = h.split('').map(c => c + c).join('');
+    if (!/^[0-9a-f]{6}$/i.test(h)) return hex;
+    const n = [0, 2, 4].map(i => parseInt(h.substr(i, 2), 16)).map(v => Math.round(f < 0 ? v * (1 + f) : v + (255 - v) * f));
+    return '#' + n.map(v => Math.max(0, Math.min(255, v)).toString(16).padStart(2, '0')).join('');
+  };
   let r = '';
   for (let cy = 0; cy < H; cy++) for (let cx = 0; cx < W; cx++) {
     const t = celdas[cx + ',' + cy];
     let color = null;
-    if (t === 'b') color = cuerpo(cx, cy);
-    else if (t === 'm') color = manga(cx, cy);
-    else if (t === 'k' || t === 'p') color = detalle;
+    if (t === 'b') {
+      color = cuerpo(cx, cy);
+      if (cx >= 13 || cy === 18) color = tono(color, -0.22);          // sombra a la derecha y en el ruedo
+      else if (cx === 5 && cy >= 8) color = tono(color, -0.15);       // pliegue bajo la manga izquierda
+      else if (cx === 6 && cy >= 3 && cy <= 9) color = tono(color, 0.14); // brillo
+    } else if (t === 'm') {
+      color = manga(cx, cy);
+      if (cy === 6 || cx >= 15) color = tono(color, -0.2);
+    } else if (t === 'k' || t === 'p') color = detalle;
     else if ([[1,0],[-1,0],[0,1],[0,-1],[1,1],[-1,-1],[1,-1],[-1,1]].some(([a, b]) => celdas[(cx + a) + ',' + (cy + b)])) color = '#111';
-    if (color) r += `<rect x="${cx}" y="${cy}" width="1" height="1" fill="${color}"/>`;
+    if (color) r += `<rect x="${cx}" y="${cy}" width="1.02" height="1.02" fill="${color}"/>`;
   }
   return `<svg class="kit-pix" viewBox="0 0 ${W} ${H}" shape-rendering="crispEdges" role="img">${r}</svg>`;
 }
