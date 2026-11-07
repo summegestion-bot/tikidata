@@ -775,6 +775,8 @@ def _estado_liga(c):
 # (gratis: 100 búsquedas por día). La clave va en la variable YOUTUBE_API_KEY.
 # ---------------------------------------------------------------------------
 YOUTUBE_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
+# Contador de visitas (GoatCounter, gratis). Variable GOATCOUNTER = el nombre elegido al registrarse (ej: tikidata)
+GOATCOUNTER = re.sub(r"[^a-z0-9-]", "", os.environ.get("GOATCOUNTER", "").strip().lower())
 # Solo canales OFICIALES (nombre exacto del canal en YouTube). Si el video no es de uno de estos,
 # no se muestra: aparece el botón para buscarlo en YouTube.
 CANALES_OFICIALES = {
@@ -797,6 +799,73 @@ _videos = {}
 _sin_video = {}
 
 
+
+# ---------------------------------------------------------------------------
+# En vivo gratis: partidos que transmiten en vivo canales OFICIALES de YouTube
+# (ligas, federaciones y clubes). Se muestran con el reproductor oficial de YouTube.
+# Gasta búsquedas de YouTube (100 por día, compartidas con los resúmenes): se busca
+# como mucho cada 30 minutos, solo cuando alguien abre la sección, y se guardan 25 para los resúmenes.
+# ---------------------------------------------------------------------------
+CANALES_VIVO = CANALES_OFICIALES | {
+    "boca juniors", "river plate", "racing club", "club atletico independiente", "independiente",
+    "san lorenzo", "san lorenzo de almagro", "club atletico huracan", "velez sarsfield", "velez",
+    "estudiantes de la plata", "club estudiantes de la plata", "gimnasia y esgrima la plata", "club atletico lanus",
+    "club atletico banfield", "argentinos juniors", "rosario central", "club atletico rosario central",
+    "newell s old boys", "club atletico newell s old boys", "talleres", "club atletico talleres", "belgrano",
+    "club atletico belgrano", "afa estudio", "seleccion argentina", "futbol femenino afa", "liga profesional femenina",
+    "primera nacional", "liga federal", "conmebol tv", "kings league", "kings league americas",
+}
+NO_ES_PARTIDO = [" reaccion", " reaccionando", " watch party", " relato", " previa", " post partido", " postpartido",
+                 " radio", " fifa 2", " efootball", " pes 20", " simulacion", " podcast", " conferencia", " sorteo", " charla"]
+_vivo = {"t": 0, "lista": []}
+_yt_uso = {"dia": "", "busquedas": 0}
+
+
+def gastar_busqueda_yt(reserva=0):
+    """Lleva la cuenta de las búsquedas del día. Devuelve False si no conviene gastar otra."""
+    hoy = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if _yt_uso["dia"] != hoy:
+        _yt_uso.update(dia=hoy, busquedas=0)
+    if _yt_uso["busquedas"] >= 95 - reserva:
+        return False
+    _yt_uso["busquedas"] += 1
+    return True
+
+
+def datos_en_vivo():
+    if not YOUTUBE_KEY:
+        return {"partidos": [], "aviso": "sin_clave"}
+    if time.time() - _vivo["t"] < 30 * 60:
+        return {"partidos": _vivo["lista"], "actualizado": int(_vivo["t"])}
+    if not gastar_busqueda_yt(reserva=25):
+        return {"partidos": _vivo["lista"], "actualizado": int(_vivo["t"])}
+    vistos, lista = set(), []
+    for q in ("fútbol en vivo", "partido en vivo"):
+        try:
+            r = requests.get("https://www.googleapis.com/youtube/v3/search", timeout=12, params={
+                "part": "snippet", "q": q, "type": "video", "eventType": "live", "maxResults": 50,
+                "regionCode": "AR", "relevanceLanguage": "es", "videoEmbeddable": "true", "key": YOUTUBE_KEY})
+            items = r.json().get("items", []) if r.status_code == 200 else []
+        except Exception:
+            items = []
+        for it in items:
+            s, vid = it.get("snippet", {}), (it.get("id") or {}).get("videoId")
+            canal = normalizar(s.get("channelTitle")).strip()
+            titulo = s.get("title", "")
+            tn = normalizar(titulo)
+            if not vid or vid in vistos or canal not in CANALES_VIVO or any(x + " " in tn for x in NO_ES_PARTIDO):
+                continue
+            vistos.add(vid)
+            mini = s.get("thumbnails", {})
+            lista.append({"id": vid, "titulo": titulo.replace("&quot;", '"').replace("&#39;", "'").replace("&amp;", "&"),
+                          "canal": s.get("channelTitle", ""),
+                          "portada": (mini.get("high") or mini.get("medium") or {}).get("url") or f"https://i.ytimg.com/vi/{vid}/hqdefault.jpg"})
+        if q == "fútbol en vivo" and not gastar_busqueda_yt(reserva=25):
+            break
+    _vivo.update(t=time.time(), lista=lista)
+    return {"partidos": lista, "actualizado": int(_vivo["t"])}
+
+
 def datos_resumen(id_partido):
     p = datos_partido_hl(str(id_partido)[1:]) if str(id_partido).startswith("h") else partido(api(f"/matches/{id_partido}", ttl=300))
     busqueda = f'{p["local"]["nombre"]} vs {p["visitante"]["nombre"]} resumen'
@@ -810,6 +879,8 @@ def datos_resumen(id_partido):
     if time.time() - _sin_video.get(id_partido, 0) < 3 * 3600:
         return respuesta  # ya se buscó hace poco y no estaba: no gastar otra búsqueda (hay 100 por día)
     _sin_video[id_partido] = time.time()
+    if not gastar_busqueda_yt():
+        return respuesta
     desde = (date.fromisoformat(p["fecha"]) - timedelta(days=1)).isoformat() + "T00:00:00Z"
     try:
         r = requests.get("https://www.googleapis.com/youtube/v3/search", timeout=12, params={
@@ -1960,6 +2031,7 @@ PAGINA = r"""<!doctype html>
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Tiki Data">
 <meta name="apple-mobile-web-app-status-bar-style" content="black">
+__CONTADOR__
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@700;800;900&family=Inter:wght@400;500;600;700;800&display=swap">
 <style>
 :root { --negro:#05070D; --fondo:#070B14; --tarj:#0D1626; --tarj2:#11203A; --sup:#132039; --linea:#1C2B47;
@@ -2249,6 +2321,7 @@ function armarMenu() {
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
     <a class="item" href="#/jugadores">${svg(ICON.jug,20)}Goleadores y comparador</a>
     <a class="item" href="#/favoritos">${svg(ICON.estrella,20)}Mis favoritos</a>
+    <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
   grupos.forEach(([n, cods]) => {
     h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c]}"></span>${esc(LIGAS[c][0])}</a>`).join('');
@@ -2379,6 +2452,25 @@ async function cargarResumenYT(id) {
       el.innerHTML = `<a class="boton yt" href="${esc(r.busqueda)}" target="_blank" rel="noopener">${svg('M8 5v14l11-7z',18,'fill="currentColor" stroke="none"')}Buscar el resumen en YouTube</a><p class="nota-pie" style="margin:6px 0 0">${txt}</p>`;
     }
   } catch (e) { el.innerHTML = ''; }
+}
+
+/* ---------- En vivo gratis: transmisiones oficiales de YouTube ---------- */
+async function vistaEnVivo(idVideo) {
+  $('vista').innerHTML = volver('En vivo gratis') + '<main id="vivo"><div class="cargando">Buscando partidos en vivo…</div></main>';
+  let d; try { d = await pedir('/api/envivo'); } catch (e) { $('vivo').innerHTML = error(e); return; }
+  const lista = d.partidos || [];
+  const elegido = lista.find(x => x.id === idVideo) || null;
+  const reproductor = elegido ? `<section class="tarjeta" style="overflow:hidden">
+      <div style="position:relative;padding-top:56.25%;background:#000"><iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(elegido.id)}?autoplay=1&rel=0" title="${esc(elegido.titulo)}" style="position:absolute;inset:0;width:100%;height:100%;border:0" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe></div>
+      <div style="padding:10px 12px 12px"><b style="font-size:14px">${esc(elegido.titulo)}</b><br><small style="color:var(--suave)">${esc(elegido.canal)} · <a class="link" href="https://www.youtube.com/watch?v=${encodeURIComponent(elegido.id)}" target="_blank" rel="noopener">Abrir en YouTube ↗</a></small></div></section>` : '';
+  const tarjetas = lista.filter(x => x !== elegido).map(x => `<a class="tarjeta video" href="#/envivo/${encodeURIComponent(x.id)}" style="display:block;overflow:hidden">
+      <div class="portada-video"><img src="${esc(x.portada)}" alt="" loading="lazy" referrerpolicy="no-referrer"><span class="play">${svg('M8 5v14l11-7z',26,'fill="#fff" stroke="none"')}</span>
+        <span style="position:absolute;top:8px;left:8px;background:#E5332A;color:#fff;font-size:11px;font-weight:800;padding:3px 8px;border-radius:6px">● EN VIVO</span></div>
+      <div class="info-video"><b>${esc(x.titulo)}</b><small>${esc(x.canal)}</small></div></a>`).join('');
+  const vacio = !lista.length ? `<div class="tarjeta aviso">${d.aviso === 'sin_clave' ? 'Falta conectar YouTube.' : 'Ahora no hay partidos gratis en vivo de canales oficiales.<br><small>Suele haber partidos del ascenso, femenino, juveniles y reserva, sobre todo los fines de semana. Volvé a mirar más tarde.</small>'}</div>` : '';
+  $('vivo').innerHTML = `<p class="nota-pie" style="margin:0">Partidos que transmiten <b>gratis y en forma oficial</b> ligas, federaciones y clubes en YouTube. La lista se actualiza cada 30 minutos.</p>
+    ${reproductor}${tarjetas}${vacio}`;
+  if (elegido) window.scrollTo(0, 0);
 }
 
 /* ---------- Partido ---------- */
@@ -2838,6 +2930,7 @@ function ruta() {
   if (v === 'jugador') return vistaJugador(a, b);
   if (v === 'comparar') return vistaComparar(a, b);
   if (v === 'favoritos') return vistaFavoritos();
+  if (v === 'envivo') return vistaEnVivo(a);
   if (v === 'club') return vistaClub(a);
   if (v === 'ficha') return vistaFicha(a);
   vistaInicio();
@@ -2869,6 +2962,15 @@ if ('serviceWorker' in navigator) window.addEventListener('load', () => navigato
 armarMenu();
 activarInstalar();
 window.addEventListener('hashchange', ruta);
+// Contador de visitas: cuenta cada pantalla que se mira (inicio, partido, club, etc.)
+function contarVisita(intento = 0) {
+  if (!window.goatcounter || !window.goatcounter.count) { if (intento < 20) setTimeout(() => contarVisita(intento + 1), 500); return; }
+  const h = (location.hash || '#/').replace(/^#/, '');
+  const pantalla = '/' + (h.split('/')[1] || 'inicio');
+  window.goatcounter.count({ path: pantalla, title: document.title, event: false });
+}
+window.addEventListener('hashchange', () => contarVisita());
+window.addEventListener('load', () => contarVisita());
 ruta();
 </script>
 </body>
@@ -2936,7 +3038,9 @@ class Manejador(BaseHTTPRequestHandler):
         liga = q.get("liga", "")
         if url.path == "/":
             visibles = {**({k: list(v) for k, v in HL_LIGAS.items()} if HL_KEY else {}), **{k: list(v) for k, v in LIGAS.items()}}
-            pagina = PAGINA.replace("__LIGAS__", json.dumps(visibles, ensure_ascii=False)).replace("__HL__", json.dumps(list(HL_LIGAS) if HL_KEY else []))
+            pagina = PAGINA.replace("__LIGAS__", json.dumps(visibles, ensure_ascii=False)).replace("__HL__", json.dumps(list(HL_LIGAS) if HL_KEY else [])).replace("__CONTADOR__", (
+                f'<script data-goatcounter="https://{GOATCOUNTER}.goatcounter.com/count" data-goatcounter-settings=\'{{"no_onload": true}}\' async src="https://gc.zgo.at/count.js"></script>'
+                if GOATCOUNTER else ""))
             self.responder(200, "text/html; charset=utf-8", pagina)
         elif url.path in ICONOS_RUTAS:
             self.responder(200, "image/png", base64.b64decode(ICONOS[ICONOS_RUTAS[url.path]]))
@@ -2969,6 +3073,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_goleadores(liga))
         elif url.path == "/api/equipos":
             self.json(lambda: datos_equipos(liga))
+        elif url.path == "/api/envivo":
+            self.json(datos_en_vivo)
         elif url.path == "/api/resumen" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_resumen(q["id"]))
         elif url.path == "/api/club_extra" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
