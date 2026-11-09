@@ -2586,13 +2586,19 @@ nav.abajo .on { color:var(--azul); }
 .meses { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:6px; }
 .mes { min-height:38px; border-radius:9px; border:0; background:var(--sup); color:#C7D2E0; font-size:12px; font-weight:700; }
 .mes.on { background:var(--azul); color:var(--fondo); }
+.cdia .cant { font-style:normal; font-size:10px; font-weight:800; color:#8FB8FA; }
+.cdia.on .cant { color:#070B14; }
+.cal-dia { display:flex; justify-content:space-between; align-items:baseline; padding:4px 2px 0; } .cal-dia b { font-size:16px; } .cal-dia small { color:var(--suave); font-size:12px; font-weight:700; }
+.cal-liga { border-left:4px solid var(--cl); }
+.cab-liga { display:flex; flex-direction:column; gap:2px; padding:11px 12px 9px; border-bottom:1px solid var(--linea); background:rgba(255,255,255,.02); }
+.cab-liga b { font-size:14px; } .cab-liga small { font-size:11.5px; color:var(--suave); font-weight:700; }
 .cal { display:grid; grid-template-columns:repeat(7, minmax(0,1fr)); gap:4px; }
 .cal .dsem { text-align:center; font-size:11px; font-weight:700; color:var(--suave); padding-bottom:4px; }
 .cdia { height:46px; border-radius:10px; border:0; background:transparent; color:#7A8799; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; font-size:14px; font-weight:700; }
 .cdia.con { background:var(--sup); color:var(--texto); }
 .cdia.hoy { outline:1.5px solid var(--azul); }
 .cdia.on { background:var(--azul); color:var(--fondo); }
-.cdia .ps { display:flex; gap:2px; height:5px; } .cdia .ps i { width:5px; height:5px; border-radius:3px; }
+.cdia .ps { display:flex; gap:2px; height:12px; align-items:center; } .cdia .ps i { width:5px; height:5px; border-radius:3px; }
 .marcador { display:grid; grid-template-columns:1fr auto 1fr; gap:8px; align-items:start; padding:14px; background:var(--negro); }
 .marcador .lado { display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; font-weight:600; font-size:14px; }
 .marcador .lado img, .marcador .lado .esc { width:58px; height:58px; }
@@ -3392,10 +3398,13 @@ async function vistaLiga(cod, pestana) {
 const cal = { liga: 'ALL', mes: new Date().getMonth(), anio: new Date().getFullYear(), dia: new Date().getDate(), datos: {} };
 async function vistaCalendario() {
   $('vista').innerHTML = volver('Calendario') + `<main id="panel"><div class="cargando">Armando el calendario de todas las ligas…</div></main>`;
-  const cods = Object.keys(LIGAS).filter(c => !HL.includes(c));
+  cal.liga = 'ALL';
+  const cods = Object.keys(LIGAS);
   await Promise.all(cods.map(async c => { if (!cal.datos[c]) { try { cal.datos[c] = (await pedir('/api/calendario?liga=' + c)).partidos; } catch (e) { cal.datos[c] = []; } } }));
   dibujarCalendario();
 }
+const ORDEN_LIGAS = ['LPF','PNA','FEDA','PRC','PRD','CAR','TDC','SCA','LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','MLS','LMX',
+  'CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC','FAC','CDR','CIT','DFB','CDF','SAU','WC','CAM','EURO'];
 function dibujarCalendario() {
   if (cal.liga !== 'ALL' && !cal.datos[cal.liga]) {
     $('panel').innerHTML = '<div class="cargando">Cargando el calendario…</div>';
@@ -3413,22 +3422,26 @@ function dibujarCalendario() {
   for (let i = 0; i < primero; i++) celdas += '<span></span>';
   for (let d = 1; d <= total; d++) {
     const ps = porDia[iso(d)] || [];
-    const ligasDia = [...new Set(ps.map(p => p.liga))].slice(0, 3);
     const esHoy = iso(d) === hoyISO();
-    celdas += `<button class="cdia ${ps.length ? 'con' : ''} ${esHoy ? 'hoy' : ''} ${d === cal.dia ? 'on' : ''}" data-d="${d}" aria-label="${d} de ${MESES_L[cal.mes]}${ps.length ? ', ' + ps.length + ' partidos' : ''}">${d}<span class="ps">${ligasDia.map(l => `<i style="background:${d === cal.dia ? '#070B14' : COLOR[l]}"></i>`).join('')}</span></button>`;
+    celdas += `<button class="cdia ${ps.length ? 'con' : ''} ${esHoy ? 'hoy' : ''} ${d === cal.dia ? 'on' : ''}" data-d="${d}" aria-label="${d} de ${MESES_L[cal.mes]}${ps.length ? ', ' + ps.length + ' partidos' : ''}">${d}<span class="ps">${ps.length ? `<em class="cant">${ps.length}</em>` : ''}</span></button>`;
   }
   const delDia = (porDia[iso(cal.dia)] || []).sort((a, b) => a.hora.localeCompare(b.hora));
+  // partidos del día agrupados por liga, en el orden del menú
+  const orden = ORDEN_LIGAS.filter(c => LIGAS[c]).concat(Object.keys(LIGAS).filter(c => !ORDEN_LIGAS.includes(c)));
+  const porLiga = orden.map(c => [c, delDia.filter(p => p.liga === c)]).filter(([, ps]) => ps.length);
+  const bloques = porLiga.map(([c, ps]) => `<section class="tarjeta cal-liga" style="--cl:${COLOR[c] || '#4F8FF7'}">
+      <a class="cab-liga" href="#/liga/${c}"><b>${esc(LIGAS[c][0])}</b><small>${esc(LIGAS[c][1] || '')}${LIGAS[c][1] ? ' · ' : ''}${ps.length} ${ps.length === 1 ? 'partido' : 'partidos'}</small></a>
+      ${ps.map(p => filaPartido(p)).join('')}</section>`).join('');
   const fd = new Date(cal.anio, cal.mes, cal.dia);
-  $('panel').innerHTML = `<div class="chips">${[['ALL','Todas']].concat(Object.keys(LIGAS).map(c => [c, LIGAS[c][0]])).map(([c, n]) => `<button class="chip ${cal.liga === c ? 'on' : ''}" data-l="${c}">${c !== 'ALL' ? `<span class="punto" style="background:${COLOR[c]}"></span>` : ''}${esc(n)}</button>`).join('')}</div>
-    <div class="meses">${MESES.map((m, i) => `<button class="mes ${i === cal.mes ? 'on' : ''}" data-m="${i}">${m}</button>`).join('')}</div>
+  $('panel').innerHTML = `<div class="meses">${MESES.map((m, i) => `<button class="mes ${i === cal.mes ? 'on' : ''}" data-m="${i}">${m}</button>`).join('')}</div>
     <section class="tarjeta pad">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
         <button class="icono" id="mAnt" aria-label="Mes anterior">${svg(ICON.atras,18)}</button>
         <b class="titulo" style="font-size:17px">${MESES_L[cal.mes][0].toUpperCase() + MESES_L[cal.mes].slice(1)} ${cal.anio}</b>
         <button class="icono" id="mSig" aria-label="Mes siguiente">${svg(ICON.sig,18)}</button></div>
       <div class="cal">${celdas}</div></section>
-    <section class="tarjeta"><div class="cab"><div class="t"><b>${DIAS_L[fd.getDay()][0].toUpperCase() + DIAS_L[fd.getDay()].slice(1)} ${cal.dia} de ${MESES_L[cal.mes]}</b><small>${delDia.length ? delDia.length + ' partidos' : 'Sin partidos'}</small></div></div>
-      ${delDia.length ? delDia.map(p => filaPartido(p, true)).join('') : '<div class="aviso">No hay partidos este día.</div>'}</section>`;
+    <div class="cal-dia"><b>${DIAS_L[fd.getDay()][0].toUpperCase() + DIAS_L[fd.getDay()].slice(1)} ${cal.dia} de ${MESES_L[cal.mes]}</b><small>${delDia.length ? delDia.length + ' partidos en ' + porLiga.length + (porLiga.length === 1 ? ' liga' : ' ligas') : 'Sin partidos'}</small></div>
+    ${bloques || '<div class="tarjeta aviso">No hay partidos este día.</div>'}`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { cal.liga = b.dataset.l; dibujarCalendario(); });
   document.querySelectorAll('[data-m]').forEach(b => b.onclick = () => { cal.mes = +b.dataset.m; cal.dia = 1; dibujarCalendario(); });
   document.querySelectorAll('[data-d]').forEach(b => b.onclick = () => { cal.dia = +b.dataset.d; dibujarCalendario(); });
@@ -3751,6 +3764,7 @@ function ruta() {
   if (v === 'favoritos') return vistaFavoritos();
   if (v === 'envivo') return vistaEnVivo(a);
   if (v === 'trivia') return vistaTrivia();
+  if (v === 'instalar') return vistaInstalar();
   if (v === 'club') return vistaClub(a);
   if (v === 'ficha') return vistaFicha(a);
   vistaInicio();
@@ -3863,7 +3877,24 @@ function alertaIphone() {
   d.querySelector('button').onclick = () => d.remove();
   document.body.appendChild(d);
 }
-window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); pedidoInstalar = e; activarInstalar(); });
+function vistaInstalar() {
+  const android = /android/i.test(navigator.userAgent);
+  const pasos = yaInstalada() ? '<div class="tarjeta aviso" style="text-align:center">✅ Ya tenés Tiki Data instalada en este celular.</div>'
+    : pedidoInstalar ? '<button class="boton" id="instalarYa" style="width:100%;font-size:17px;padding:16px">📲 Instalar Tiki Data</button>'
+    : esIphone ? `<section class="tarjeta pad"><b style="font-size:15px">En el iPhone es así:</b><ol style="margin:10px 0 0;padding-left:20px;font-size:15px;line-height:1.7;color:#C7D2E0">
+        <li>Abrí este link en <b>Safari</b>.</li><li>Tocá el botón <b>Compartir</b> (el cuadrado con la flecha para arriba).</li><li>Elegí <b>Agregar a pantalla de inicio</b> y después <b>Agregar</b>.</li></ol></section>`
+    : `<section class="tarjeta pad"><b style="font-size:15px">${android ? 'En Android' : 'En la compu'} es así:</b><ol style="margin:10px 0 0;padding-left:20px;font-size:15px;line-height:1.7;color:#C7D2E0">
+        <li>Abrí este link en <b>Chrome</b>.</li><li>Tocá los <b>tres puntitos</b> (⋮) arriba a la derecha.</li><li>Elegí <b>Instalar aplicación</b> o <b>Agregar a la pantalla principal</b>.</li></ol></section>`;
+  $('vista').innerHTML = `<main style="align-items:center;text-align:center;padding-top:26px">
+    <img src="/icono-512.png" alt="Tiki Data" style="width:150px;height:150px;border-radius:34px;box-shadow:0 10px 40px rgba(47,107,219,.35)">
+    <b class="titulo" style="font-size:28px">TIKI<span style="color:#4F8FF7">DATA</span></b>
+    <p style="margin:-4px 0 6px;color:#C7D2E0;font-size:15px;line-height:1.5">Resultados en vivo, avisos de gol, tablas y noticias.<br>Gratis y sin ocupar lugar en el celular.</p>
+    <div style="width:100%;max-width:420px;display:flex;flex-direction:column;gap:12px;text-align:left">${pasos}
+      <a class="boton sec" href="#/" style="text-align:center">Entrar sin instalar</a></div></main>`;
+  const b = $('instalarYa');
+  if (b) b.onclick = async () => { pedidoInstalar.prompt(); await pedidoInstalar.userChoice; pedidoInstalar = null; vistaInstalar(); };
+}
+window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); pedidoInstalar = e; activarInstalar(); if (location.hash.startsWith('#/instalar')) vistaInstalar(); });
 window.addEventListener('appinstalled', () => { pedidoInstalar = null; activarInstalar(); });
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 armarMenu();
@@ -3964,6 +3995,11 @@ class Manejador(BaseHTTPRequestHandler):
                 f'<script data-goatcounter="https://{GOATCOUNTER}.goatcounter.com/count" data-goatcounter-settings=\'{{"no_onload": true}}\' async src="https://gc.zgo.at/count.js"></script>'
                 if GOATCOUNTER else ""))
             self.responder(200, "text/html; charset=utf-8", pagina)
+        elif url.path in ("/instalar", "/descargar", "/app"):
+            self.send_response(302)
+            self.send_header("Location", "/#/instalar")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
         elif url.path == "/compartir.jpg":
             self.responder(200, "image/jpeg", base64.b64decode(IMAGEN_COMPARTIR))
         elif url.path in ICONOS_RUTAS:
