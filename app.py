@@ -2488,16 +2488,20 @@ main { padding:14px 10px; display:flex; flex-direction:column; gap:14px; }
 .link { font-size:13px; font-weight:600; color:#8DB8FF; padding:8px 0; background:none; border:0; }
 .aviso { padding:22px 16px; text-align:center; color:var(--suave); font-size:14px; line-height:1.5; }
 .cargando { padding:34px 24px 30px; text-align:center; color:var(--suave); font-weight:600; display:flex; flex-direction:column; align-items:center; gap:10px; }
-/* Pelotita que rebota mientras carga */
-.cargando::before { content:''; order:-2; width:44px; height:44px; border-radius:50%; margin-bottom:0;
-  background:radial-gradient(circle at 50% 50%, #0D1626 0 17%, transparent 18%), radial-gradient(circle at 18% 30%, #0D1626 0 11%, transparent 12%),
-    radial-gradient(circle at 82% 30%, #0D1626 0 11%, transparent 12%), radial-gradient(circle at 30% 85%, #0D1626 0 11%, transparent 12%),
-    radial-gradient(circle at 70% 85%, #0D1626 0 11%, transparent 12%), radial-gradient(circle at 35% 30%, #FFFFFF, #C9D6E8 70%);
-  box-shadow:0 0 0 2px #2F6BDB; animation:rebote .8s cubic-bezier(.5,0,.5,1) infinite alternate, gira 1.6s linear infinite; }
-.cargando::after { content:''; order:-1; width:40px; height:8px; border-radius:50%; background:rgba(79,143,247,.35); margin:-6px 0 8px; animation:sombra .8s cubic-bezier(.5,0,.5,1) infinite alternate; }
-@keyframes rebote { from { transform:translateY(-34px); } to { transform:translateY(0); } }
-@keyframes gira { to { rotate:360deg; } }
-@keyframes sombra { from { transform:scale(.55); opacity:.45; } to { transform:scale(1); opacity:1; } }
+/* Mientras carga: la pelota entra en el arco */
+.anim-gol { position:relative; width:170px; height:74px; margin-bottom:6px; }
+.anim-gol .piso { position:absolute; left:0; right:0; bottom:0; height:3px; border-radius:2px; background:linear-gradient(90deg, transparent, #1E7A43 15%, #1E7A43 85%, transparent); }
+.anim-gol .arco { position:absolute; right:6px; bottom:3px; width:52px; height:38px; border:3px solid #EEF2F7; border-bottom:0; border-radius:3px 3px 0 0;
+  background:repeating-linear-gradient(0deg, rgba(255,255,255,.18) 0 1px, transparent 1px 6px), repeating-linear-gradient(90deg, rgba(255,255,255,.18) 0 1px, transparent 1px 6px);
+  transform-origin:50% 100%; animation:red 2s ease-in-out infinite; }
+.anim-gol .bola { position:absolute; left:4px; bottom:3px; width:16px; height:16px; border-radius:50%;
+  background:radial-gradient(circle at 50% 50%, #0D1626 0 20%, transparent 22%), radial-gradient(circle at 15% 35%, #0D1626 0 12%, transparent 14%), radial-gradient(circle at 85% 35%, #0D1626 0 12%, transparent 14%), radial-gradient(circle at 50% 95%, #0D1626 0 14%, transparent 16%), radial-gradient(circle at 35% 30%, #fff, #C9D6E8 75%);
+  animation:tiro 2s cubic-bezier(.3,.6,.4,1) infinite; }
+.anim-gol .txt-gol { position:absolute; right:10px; top:2px; font-size:15px; font-weight:900; color:#3DD68C; letter-spacing:1px; animation:grito 2s ease infinite; }
+@keyframes tiro { 0% { transform:translate(0,0) rotate(0); opacity:1; } 30% { transform:translate(62px,-42px) rotate(300deg); }
+  55% { transform:translate(128px,-16px) rotate(620deg); } 70% { transform:translate(132px,-4px) rotate(680deg); } 88% { transform:translate(132px,0) rotate(700deg); opacity:1; } 100% { transform:translate(132px,0) rotate(700deg); opacity:0; } }
+@keyframes red { 0%, 52% { transform:scale(1); } 60% { transform:scale(1.08, 1.05); } 70% { transform:scale(.98); } 80%, 100% { transform:scale(1); } }
+@keyframes grito { 0%, 55% { opacity:0; transform:translateY(8px) scale(.6); } 65% { opacity:1; transform:translateY(0) scale(1.15); } 90% { opacity:1; transform:scale(1); } 100% { opacity:0; } }
 .dato-carga { max-width:300px; font-size:13px; font-weight:600; color:#C7D2E0; line-height:1.45; animation:aparece .4s ease; }
 .dato-carga b { color:#4F8FF7; display:block; font-size:11px; letter-spacing:1px; margin-bottom:2px; }
 @keyframes aparece { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
@@ -2794,17 +2798,26 @@ function volver(titulo, destino='#/') {
 /* ---------- Menú y navegación ---------- */
 // Mientras algo carga: datos curiosos que van cambiando
 const DATOS_CARGA = [
-  'El primer Mundial se jugó en Uruguay, en 1930.', 'Argentina ganó 3 Mundiales: 1978, 1986 y 2022.',
-  'Independiente es el club con más Copas Libertadores: 7.', 'Miroslav Klose es el máximo goleador de los Mundiales, con 16 goles.',
-  'El arco mide 7,32 metros de ancho y 2,44 de alto.', 'La pelota oficial pesa entre 410 y 450 gramos.',
-  'La Copa América, de 1916, es el torneo de selecciones más antiguo del mundo.', 'Pelé ganó 3 Mundiales con Brasil.',
-  'La Bombonera se inauguró en 1940.', 'Racing fue el primer club argentino campeón del mundo, en 1967.',
-  'Maradona hizo el "gol del siglo" a Inglaterra en México 86.', 'Boca y River jugaron la final de la Libertadores 2018 en Madrid.',
-  'Las canchas de Racing e Independiente están a unas cuadras de distancia.', 'Messi ganó 8 Balones de Oro.',
-  'Un partido tiene 2 tiempos de 45 minutos, más lo que agregue el árbitro.', 'El Real Madrid ganó 15 Champions League.'
+  'El gol más rápido de los Mundiales lo hizo Hakan Şükür (Turquía) en 2002: a los 11 segundos.',
+  'Messi es el jugador con más partidos jugados en Mundiales: 26.',
+  'Las tarjetas amarilla y roja se usaron por primera vez en el Mundial de 1970.',
+  'El VAR se usó por primera vez en un Mundial en Rusia 2018.',
+  'El primer partido entre selecciones fue Escocia vs Inglaterra, en 1872. Terminó 0 a 0.',
+  'Lev Yashin es el único arquero que ganó el Balón de Oro (1963).',
+  'Martín Palermo erró tres penales en un mismo partido: contra Colombia, en la Copa América 1999.',
+  'Solo Italia (1934 y 1938) y Brasil (1958 y 1962) ganaron dos Mundiales seguidos.',
+  'La primera Copa Libertadores fue en 1960 y la ganó Peñarol.',
+  'Batistuta hizo tres goles en un partido en dos Mundiales distintos: 1994 y 1998.',
+  'Maradona jugó 4 Mundiales: 1982, 1986, 1990 y 1994.',
+  'El penal existe desde 1891.',
+  'Si un equipo se queda con menos de 7 jugadores, el partido se suspende.',
+  'Cristiano Ronaldo es el máximo goleador de la historia de la Champions.',
+  'El Mundial 2026 fue el primero con 48 selecciones.',
+  'En la final del Mundial 1950, en el Maracaná, había más de 170.000 personas.'
 ];
 let datoN = Math.floor(Math.random() * DATOS_CARGA.length);
 function ponerDato(el) {
+  if (!el.querySelector('.anim-gol')) el.insertAdjacentHTML('afterbegin', '<div class="anim-gol" aria-hidden="true"><span class="piso"></span><span class="arco"></span><span class="bola"></span><b class="txt-gol">¡GOL!</b></div>');
   let d = el.querySelector('.dato-carga');
   if (!d) { d = document.createElement('span'); d.className = 'dato-carga'; el.appendChild(d); }
   datoN = (datoN + 1) % DATOS_CARGA.length;
@@ -2813,7 +2826,9 @@ function ponerDato(el) {
 }
 setInterval(() => document.querySelectorAll('.cargando').forEach(ponerDato), 3500);
 new MutationObserver(() => document.querySelectorAll('.cargando:not([data-dato])').forEach(el => {
-  el.dataset.dato = '1'; setTimeout(() => { if (el.isConnected) ponerDato(el); }, 900);
+  el.dataset.dato = '1';
+  el.insertAdjacentHTML('afterbegin', '<div class="anim-gol" aria-hidden="true"><span class="piso"></span><span class="arco"></span><span class="bola"></span><b class="txt-gol">¡GOL!</b></div>');
+  setTimeout(() => { if (el.isConnected) ponerDato(el); }, 900);
 })).observe(document.body, { childList: true, subtree: true });
 function armarMenu() {
   const grupos = [['ARGENTINA', ['LPF','PNA','BMT','RES','CAR']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
