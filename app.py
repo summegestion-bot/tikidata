@@ -169,11 +169,15 @@ def partido(p, liga_defecto=None):
 def datos_hoy(fecha):
     grupos_hl = []
     if HL_KEY:
-        for cod in HL_LIGAS:
+        def uno(cod):
             try:
-                ps = sorted(hl_hoy(cod, fecha), key=lambda p: p["hora"])
+                return cod, sorted(hl_hoy(cod, fecha), key=lambda p: p["hora"])
             except Exception:
-                continue
+                return cod, []
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(8) as ex:
+            resultados = list(ex.map(uno, [c for c in HL_LIGAS if c not in _hl_no_encontradas]))
+        for cod, ps in resultados:
             if ps:
                 grupos_hl.append({"liga": cod, "nombre": HL_LIGAS[cod][0], "region": HL_LIGAS[cod][1],
                                   "emblema": ps[0]["ligaEmblema"], "partidos": [{k: v for k, v in p.items() if k != "_inicio"} for p in ps]})
@@ -260,7 +264,92 @@ def datos_tabla(liga):
     return {"liga": liga, "nombre": LIGAS[liga][0], "grupos": grupos}
 
 
+GOLEADORES_HL = ("LPF",)   # torneos donde se cuentan los goles partido por partido
+_goleadores = {}
+_goleadores_candado = threading.Lock()
+
+
+def _torneo_actual(partidos):
+    """Si las fechas dicen Apertura/Clausura, se cuentan solo las del torneo que se está jugando."""
+    con_nombre = [p for p in partidos if re.search(r"apertura|clausura", (p.get("fase") or "").lower())]
+    if not con_nombre:
+        return partidos, "Temporada " + str(datetime.now(ARG).year)
+    ultimo = max(con_nombre, key=lambda p: p["_inicio"])
+    torneo = "clausura" if "clausura" in ultimo["fase"].lower() else "apertura"
+    return [p for p in partidos if torneo in (p.get("fase") or "").lower()], torneo.title() + " " + str(datetime.now(ARG).year)
+
+
+def calcular_goleadores_hl(cod):
+    """Recorre los partidos terminados y suma los goles de cada jugador (cada partido se pide una sola vez)."""
+    jugados = [p for p in hl_temporada(cod) if p["terminado"]]
+    jugados, titulo = _torneo_actual(jugados)
+    tabla = {}
+
+    def detalle(p):
+        try:
+            return p, hl(f"/matches/{p['id'][1:]}", ttl=60 * 86400)
+        except Exception:
+            return p, None
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(6) as ex:
+        detalles = list(ex.map(detalle, jugados))
+    for p, d in detalles:
+        if d is None:
+            continue
+        m = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
+        equipos = {str((m.get(k) or {}).get("id")): _equipo_hl(m.get(k)) for k in ("homeTeam", "awayTeam")}
+        en_cancha = set()
+        for e in m.get("events") or []:
+            tipo, jug = e.get("type") or "", (e.get("player") or "").strip()
+            eq = equipos.get(str((e.get("team") or {}).get("id"))) or {"id": None, "nombre": "", "escudo": "", "sigla": ""}
+            if jug and tipo in ("Goal", "Penalty"):
+                f = tabla.setdefault((jug, eq["id"]), {"nombre": jug, "equipo": eq, "goles": 0, "asistencias": 0, "penales": 0, "partidos": set()})
+                f["goles"] += 1
+                f["penales"] += tipo == "Penalty"
+                f["partidos"].add(p["id"])
+            asis = (e.get("assist") or "").strip()
+            if asis and tipo == "Goal":
+                f = tabla.setdefault((asis, eq["id"]), {"nombre": asis, "equipo": eq, "goles": 0, "asistencias": 0, "penales": 0, "partidos": set()})
+                f["asistencias"] += 1
+    lista = sorted(tabla.values(), key=lambda f: (-f["goles"], -f["asistencias"], f["nombre"]))
+    lista = [f for f in lista if f["goles"] > 0][:30]
+    for i, f in enumerate(lista):
+        f["id"] = "g" + re.sub(r"[^a-z0-9]", "", normalizar(f["nombre"]))[:20] + str(i)
+        f["partidos"] = len(f["partidos"])
+        f.update(nacionalidad="", nacimiento="", posicion="")
+    return {"lista": lista, "titulo": titulo, "hora": time.time()}
+
+
+def _actualizar_goleadores(cod):
+    with _goleadores_candado:
+        try:
+            _goleadores[cod] = calcular_goleadores_hl(cod)
+        except Exception as e:
+            _goleadores.setdefault(cod, {"lista": [], "titulo": "", "hora": time.time(), "error": str(e)})
+
+
+def goleadores_al_arrancar():
+    """Busca los torneos y cuenta los goles apenas arranca el servidor (y los goles cada 3 horas), sin que nadie espere."""
+    time.sleep(5)
+    for c in HL_LIGAS:
+        try:
+            hl_liga(c)
+        except Exception:
+            pass
+    while True:
+        for c in GOLEADORES_HL:
+            _actualizar_goleadores(c)
+        time.sleep(3 * 3600)
+
+
 def datos_goleadores(liga):
+    if liga in GOLEADORES_HL and HL_KEY:
+        g = _goleadores.get(liga)
+        if not g and not _goleadores_candado.locked():
+            threading.Thread(target=_actualizar_goleadores, args=(liga,), daemon=True).start()
+        if not g:
+            return {"liga": liga, "nombre": HL_LIGAS[liga][0], "goleadores": [], "calculando": True}
+        return {"liga": liga, "nombre": HL_LIGAS[liga][0] + (" · " + g["titulo"] if g.get("titulo") else ""), "goleadores": g["lista"]}
     if liga in HL_LIGAS:
         return {"liga": liga, "nombre": HL_LIGAS[liga][0], "goleadores": []}
     datos = api(f"/competitions/{liga}/scorers?limit=30", ttl=600)
@@ -342,12 +431,81 @@ HL_BUSQUEDA = {
     "SUD": [{"leagueName": "CONMEBOL Sudamericana"}, {"leagueName": "Copa Sudamericana"}, {"leagueName": "Sudamericana"},
             {"countryName": "South America"}, {"countryName": "World"}],
 }
-_EXCLUIR = (" reserva", " reserve", " femen", " women", " sub ", " u20", " u17", " u23", " youth", " juvenil", " futsal")
+_EXCLUIR = (" reserva", " reserve", " femen", " women", " sub ", " u20", " u17", " u19", " u21", " u23", " youth", " juvenil", " futsal",
+            " qualif", " clasif", " beach", " playoff relegation", " segunda ", " second ", " amateur")
+
+# Ligas nuevas del plan PRO: código -> (nombre, región, búsquedas, palabras que tiene que tener el nombre)
+NUEVAS_HL = {
+    "PNA": ("Primera Nacional", "Argentina", [{"countryCode": "AR"}], [" primera nacional ", " primera b nacional "]),
+    "URU": ("Liga uruguaya", "Uruguay", [{"countryCode": "UY"}, {"countryName": "Uruguay"}], [" primera division ", " liga auf ", " campeonato uruguayo "]),
+    "CHI": ("Liga chilena", "Chile", [{"countryCode": "CL"}, {"countryName": "Chile"}], [" primera division ", " liga de primera "]),
+    "COL": ("Liga colombiana", "Colombia", [{"countryCode": "CO"}, {"countryName": "Colombia"}], [" primera a ", " liga betplay ", " liga dimayor "]),
+    "PAR": ("Liga paraguaya", "Paraguay", [{"countryCode": "PY"}, {"countryName": "Paraguay"}], [" division profesional ", " primera division "]),
+    "PER": ("Liga peruana", "Perú", [{"countryCode": "PE"}, {"countryName": "Peru"}], [" liga 1 ", " primera division "]),
+    "ECU": ("Liga ecuatoriana", "Ecuador", [{"countryCode": "EC"}, {"countryName": "Ecuador"}], [" liga pro ", " serie a "]),
+    "BOL": ("Liga boliviana", "Bolivia", [{"countryCode": "BO"}, {"countryName": "Bolivia"}], [" division profesional ", " primera division "]),
+    "VEN": ("Liga venezolana", "Venezuela", [{"countryCode": "VE"}, {"countryName": "Venezuela"}], [" liga futve ", " primera division "]),
+    "MLS": ("MLS", "Estados Unidos", [{"leagueName": "Major League Soccer"}, {"leagueName": "MLS"}, {"countryCode": "US"}], [" major league soccer ", " mls "]),
+    "LMX": ("Liga MX", "México", [{"leagueName": "Liga MX"}, {"countryCode": "MX"}], [" liga mx "]),
+    "SAU": ("Liga saudí", "Arabia Saudita", [{"countryCode": "SA"}, {"countryName": "Saudi Arabia"}], [" pro league ", " saudi professional league ", " saudi league "]),
+    "UEL": ("Europa League", "Europa", [{"leagueName": "UEFA Europa League"}, {"leagueName": "Europa League"}], [" europa league "]),
+    "UECL": ("Conference League", "Europa", [{"leagueName": "UEFA Conference League"}, {"leagueName": "Conference League"}, {"leagueName": "UEFA Europa Conference League"}], [" conference league "]),
+    "FAC": ("FA Cup", "Inglaterra", [{"leagueName": "FA Cup"}], [" fa cup "]),
+    "CDR": ("Copa del Rey", "España", [{"leagueName": "Copa del Rey"}], [" copa del rey "]),
+    "CIT": ("Copa Italia", "Italia", [{"leagueName": "Coppa Italia"}], [" coppa italia "]),
+    "DFB": ("Copa de Alemania", "Alemania", [{"leagueName": "DFB Pokal"}, {"leagueName": "DFB-Pokal"}], [" dfb pokal "]),
+    "CDF": ("Copa de Francia", "Francia", [{"leagueName": "Coupe de France"}], [" coupe de france "]),
+    "CAM": ("Copa América", "Selecciones", [{"leagueName": "Copa America"}, {"leagueName": "CONMEBOL Copa America"}], [" copa america "]),
+    "EURO": ("Eurocopa", "Selecciones", [{"leagueName": "UEFA Euro"}, {"leagueName": "Euro Championship"}, {"leagueName": "European Championship"}], [" euro championship ", " uefa euro ", " european championship ", " euro 20"]),
+}
+for _c, (_n, _r, _b, _p) in NUEVAS_HL.items():
+    HL_LIGAS[_c] = (_n, _r)
+    HL_BUSQUEDA[_c] = _b
+_hl_no_encontradas = set()
+_emblemas_hl = {}
+_emblemas = {"hora": 0, "datos": {}}
+
+
+def datos_emblemas():
+    """Imagen (logo) de cada liga para el menú. Se arma una vez por día."""
+    if time.time() - _emblemas["hora"] < 86400 and _emblemas["datos"]:
+        return _emblemas["datos"]
+    res = {}
+    try:
+        for c in api("/competitions", ttl=7 * 86400).get("competitions", []):
+            if c.get("code") in LIGAS and c.get("emblem"):
+                res[c["code"]] = c["emblem"]
+    except Exception:
+        pass
+    if HL_KEY:
+        def logo(cod):
+            if cod in _emblemas_hl:
+                return cod, _emblemas_hl[cod]
+            try:
+                i, _ = hl_liga(cod)
+                d = hl(f"/leagues/{i}", ttl=30 * 86400)
+                d = d[0] if isinstance(d, list) and d else d
+                return cod, ((d or {}).get("logo") or "") if isinstance(d, dict) else ""
+            except Exception:
+                return cod, ""
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(8) as ex:
+            for cod, url in ex.map(logo, [c for c in HL_LIGAS if c not in _hl_no_encontradas]):
+                if url:
+                    res[cod] = url
+    _emblemas.update(hora=time.time() if res else 0, datos=res)
+    return res
 
 
 def _elige(cod, nombre_norm):
     if any(x in nombre_norm for x in _EXCLUIR):
         return False
+    if cod in NUEVAS_HL:
+        if cod == "UEL" and " conference " in nombre_norm:
+            return False
+        if cod in ("COL", "PER", "BOL", "PAR", "VEN", "CHI", "URU") and (" b " in nombre_norm or " ascenso " in nombre_norm):
+            return False
+        return any(p in nombre_norm for p in NUEVAS_HL[cod][3])
     return {"LPF": " liga profesional " in nombre_norm or nombre_norm.strip() == "primera division",
             "CAR": " copa argentina " in nombre_norm,
             "LIB": " libertadores " in nombre_norm or " libertadores" in nombre_norm,
@@ -380,13 +538,14 @@ def hl(ruta, params=None, ttl=3600):
             if viejo:
                 return viejo[1]
             raise RuntimeError("Se terminaron los pedidos de hoy. Mañana se actualiza solo.")
-        try:
-            r = requests.get(HL_BASE + ruta, params=params, headers={"x-rapidapi-key": HL_KEY}, timeout=15)
-        except Exception as e:
-            _hl["error"] = str(e)[:120]
-            if viejo:
-                return viejo[1]
-            raise RuntimeError("Highlightly no responde en este momento.")
+    try:
+        r = requests.get(HL_BASE + ruta, params=params, headers={"x-rapidapi-key": HL_KEY}, timeout=15)
+    except Exception as e:
+        _hl["error"] = str(e)[:120]
+        if viejo:
+            return viejo[1]
+        raise RuntimeError("Highlightly no responde en este momento.")
+    with _hl_candado:
         _hl["usados"] += 1
         try:
             _hl["restantes"] = int(r.headers.get("x-ratelimit-requests-remaining"))
@@ -432,6 +591,8 @@ def hl_liga(cod):
                 vistos.append(lg.get("name") or "")
                 elegida = (str(lg.get("id")) == fijos[cod]) if fijos.get(cod) else _elige(cod, normalizar(lg.get("name")))
                 if elegida:
+                    if lg.get("logo"):
+                        _emblemas_hl[cod] = lg["logo"]
                     temporadas = [x.get("season") for x in (lg.get("seasons") or []) if isinstance(x, dict) and x.get("season")]
                     return lg.get("id"), (max(temporadas) if temporadas else datetime.now(ARG).year)
             total = ((datos or {}).get("pagination") or {}).get("totalCount") if isinstance(datos, dict) else None
@@ -441,6 +602,7 @@ def hl_liga(cod):
     if fijos.get(cod):
         return int(fijos[cod]), datetime.now(ARG).year
     _hl.setdefault("candidatos", {})[cod] = sorted(set(vistos))[:40]
+    _hl_no_encontradas.add(cod)
     raise RuntimeError(f"No encontramos {HL_LIGAS[cod][0]} en Highlightly.")
 
 
@@ -1723,7 +1885,7 @@ def camisetas_pixel(nombres, argentino=False, colores_fd="", colores_wiki=None):
 
 
 # ---------------------------------------------------------------------------
-# Estudio: partidos terminados (o en juego) de hoy y ayer, para armar videos de Instagram
+# Importancia de un partido
 # nivel 2 = MEGA (Superclásico, finales) · 1 = importante (Boca, River, copas, playoffs, Selección) · 0 = normal
 # ---------------------------------------------------------------------------
 NO_ES_FINAL = ["semi", "quarter", "cuartos", "octavos", "round of", "1/", "16", "32", "group", "grupo", "repechaje", "play-off round"]
@@ -1750,31 +1912,6 @@ def nivel_partido(p):
     if p["liga"] == "WC" and (" argentina " in nl or " argentina " in nv):
         return 1, "Selección"
     return 0, ""
-
-
-def kit_de(equipo, argentino):
-    k = camisetas_pixel([equipo["nombre"]], argentino)
-    return k[0]["pix"] if k else {"p": "liso", "c1": "#2F6BDB", "c2": "#FFFFFF", "c3": "", "m": "", "k": "", "ancho": False}
-
-
-def datos_estudio():
-    hoy = datetime.now(ARG).date()
-    lista = []
-    for dia, nombre in ((hoy, "hoy"), (hoy - timedelta(days=1), "ayer")):
-        try:
-            d = datos_hoy(dia.isoformat())
-        except Exception:
-            continue
-        for g in d.get("grupos", []):
-            for p in g["partidos"]:
-                if not (p.get("terminado") or p.get("vivo")):
-                    continue
-                nivel, motivo = nivel_partido(p)
-                argentino = p["liga"] in ("LPF", "CAR")
-                lista.append(dict(p, dia=nombre, nivel=nivel, motivo=motivo,
-                                  kitL=kit_de(p["local"], argentino), kitV=kit_de(p["visitante"], argentino)))
-    lista.sort(key=lambda p: (-p["nivel"], p["dia"] != "hoy", p["fecha"] + p["hora"]), reverse=False)
-    return {"partidos": lista}
 
 
 def es_argentino(id_txt):
@@ -2318,6 +2455,8 @@ nav.abajo .on { color:var(--azul); }
 .chip { min-height:36px; display:inline-flex; align-items:center; gap:6px; padding:0 12px; border-radius:18px; border:1px solid var(--borde); background:none; color:#C7D2E0; font-size:12px; font-weight:700; }
 .chip.on { background:var(--texto); color:var(--fondo); border-color:var(--texto); }
 .punto { width:8px; height:8px; border-radius:4px; display:inline-block; }
+.logo-liga { width:26px; height:26px; flex:none; border-radius:7px; background:#EEF2F7; padding:3px; object-fit:contain; display:inline-block; }
+.logo-liga.vacio { background:none; padding:0; display:inline-flex; align-items:center; justify-content:center; }
 .meses { display:grid; grid-template-columns:repeat(6, minmax(0,1fr)); gap:6px; }
 .mes { min-height:38px; border-radius:9px; border:0; background:var(--sup); color:#C7D2E0; font-size:12px; font-weight:700; }
 .mes.on { background:var(--azul); color:var(--fondo); }
@@ -2405,20 +2544,6 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .aviso-gol small { display:block; font-size:11px; color:#AEB9CC; font-weight:600; }
 .aviso-gol b { display:block; font-size:15px; font-weight:900; margin-top:2px; }
 .aviso-gol span span, .aviso-gol > span > span { display:block; font-size:12.5px; color:#DCE3EE; }
-.est-p { overflow:hidden; } .est-p.mega { border-color:#F5C400; box-shadow:0 0 0 1px #F5C400 inset; }
-.est-cab { display:flex; flex-direction:column; gap:8px; width:100%; padding:12px; border:0; background:none; text-align:left; color:var(--texto); }
-.est-cab small { font-size:12px; color:var(--suave); font-weight:700; }
-.est-res { display:grid; grid-template-columns:34px 1fr auto 1fr 34px; align-items:center; gap:8px; font-size:14px; }
-.est-res b:nth-of-type(1) { text-align:right; } .est-res strong { font-family:Montserrat, sans-serif; font-size:20px; font-weight:900; padding:2px 10px; background:var(--sup); border-radius:8px; }
-.est-k svg { width:34px; height:34px; display:block; }
-.ins { font-size:11px; font-weight:900; padding:4px 8px; border-radius:999px; white-space:nowrap; } .ins.mega { background:#F5C400; color:#05070D; } .ins.imp { background:#2F6BDB; color:#fff; }
-.est-ed { display:flex; flex-direction:column; gap:10px; padding:0 12px 14px; border-top:1px solid var(--linea); padding-top:12px; }
-.est-ed small { font-size:12px; color:var(--suave); line-height:1.5; }
-.est-ed label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:800; color:var(--suave); }
-.est-ed input, .est-ed textarea { font:inherit; font-size:15px; font-weight:700; color:var(--texto); background:var(--sup); border:1.5px solid var(--borde); border-radius:10px; padding:10px; resize:none; }
-.est-grab { position:fixed; inset:0; z-index:80; background:rgba(5,7,13,.92); display:flex; align-items:center; justify-content:center; padding:16px; }
-.est-grab-in { width:min(420px, 100%); background:var(--tarj); border:1px solid var(--borde); border-radius:18px; padding:16px; display:flex; flex-direction:column; gap:10px; text-align:center; }
-.est-prev canvas { width:180px; height:320px; border-radius:12px; display:block; margin:0 auto; }
 .camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
 .kit.pix > div img { image-rendering:pixelated; }
@@ -2516,7 +2641,8 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 <script>
 const LIGAS = __LIGAS__;
 const HL = __HL__;  // torneos que vienen de Highlightly
-const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399' };
+const CON_GOL = ['LPF'];  // torneos de Highlightly con tabla de goleadores
+const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -2582,8 +2708,22 @@ function volver(titulo, destino='#/') {
 }
 
 /* ---------- Menú y navegación ---------- */
+// Logos de las ligas: se guardan en el celular y se actualizan una vez por día
+let EMBLEMAS = leer('tiki_emblemas', {});
+function cargarEmblemas() {
+  const t = leer('tiki_emblemas_t', 0);
+  if (Date.now() - t < 86400000 && Object.keys(EMBLEMAS).length) return;
+  fetch('/api/emblemas').then(r => r.ok ? r.json() : null).then(d => {
+    if (d && Object.keys(d).length) { EMBLEMAS = d; guardar('tiki_emblemas', d); guardar('tiki_emblemas_t', Date.now()); armarMenu(); }
+  }).catch(() => {});
+}
+const puntoLiga = (c) => `<span class="logo-liga vacio"><span class="punto" style="background:${COLOR[c] || '#60A5FA'}"></span></span>`;
+function logoLiga(c) { return EMBLEMAS[c] ? `<img class="logo-liga" src="${esc(EMBLEMAS[c])}" alt="" loading="lazy" data-liga="${c}" onerror="this.replaceWith(Object.assign(document.createElement('span'), { innerHTML: puntoLiga(this.dataset.liga) }).firstChild)">` : puntoLiga(c); }
 function armarMenu() {
-  const grupos = [['ARGENTINA', ['LPF','CAR'].filter(c => LIGAS[c])], ['SUDAMÉRICA', ['LIB','SUD','BSA'].filter(c => LIGAS[c])], ['EUROPA', ['CL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']], ['SELECCIONES', ['WC']]].filter(g => g[1].length);
+  const grupos = [['ARGENTINA', ['LPF','PNA','CAR']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
+    ['NORTEAMÉRICA', ['MLS','LMX']], ['EUROPA', ['CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']],
+    ['COPAS DE EUROPA', ['FAC','CDR','CIT','DFB','CDF']], ['ASIA', ['SAU']], ['SELECCIONES', ['WC','CAM','EURO']]]
+    .map(([n, cods]) => [n, cods.filter(c => LIGAS[c])]).filter(g => g[1].length);
   let h = `<div class="grupo">
     <a class="item" href="#/">${svg(ICON.inicio,20)}Inicio</a>
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
@@ -2592,11 +2732,9 @@ function armarMenu() {
     <a class="item" href="#/favoritos"><span style="width:20px;text-align:center">🔔</span>Avisos de gol en vivo</a>
     <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
     <a class="item" href="#/trivia"><span style="width:20px;text-align:center">🧠</span>Trivia de fútbol</a>
-    <a class="item" href="#/estudio"><span style="width:20px;text-align:center">🎬</span>Estudio de videos</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
   grupos.forEach(([n, cods]) => {
-    h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c]}"></span>${esc(LIGAS[c][0])}</a>`).join('');
-    if (n === 'ARGENTINA' || (n === 'SUDAMÉRICA' && !LIGAS.LPF)) h += ['Primera Nacional', 'Liga uruguaya', 'MLS'].map(x => `<span class="item off"><span class="punto" style="background:#475569"></span>${x}<em>PRÓXIMAMENTE</em></span>`).join('');
+    h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}">${logoLiga(c)}${esc(LIGAS[c][0])}</a>`).join('');
     h += '</div>';
   });
   $('menuLigas').innerHTML = h;
@@ -2893,284 +3031,6 @@ function finTrivia() {
   $('otraVez').onclick = () => empezarTrivia(t.cat, t.nivel);
 }
 
-/* ---------- Estudio: videos de Instagram de los partidos, generados en el navegador ---------- */
-const EST = { lista: [], abierto: null, goles: {}, logo: null, kits: {} };
-async function vistaEstudio() {
-  $('vista').innerHTML = volver('Estudio de videos') + `<main id="estudio">
-    <p class="nota-pie" style="margin:0">Partidos terminados de hoy y de ayer. Elegí uno, revisá los textos y tocá <b>Crear video</b>: en unos 35 segundos se descarga listo para Instagram, con su portada.</p>
-    <div class="cargando">Buscando partidos…</div></main>`;
-  let d; try { d = await pedir('/api/estudio'); } catch (e) { $('estudio').innerHTML = error(e); return; }
-  EST.lista = d.partidos;
-  if (!EST.lista.length) { $('estudio').innerHTML = '<div class="tarjeta aviso">Todavía no terminó ningún partido hoy ni ayer.</div>'; return; }
-  dibujarEstudio();
-}
-function dibujarEstudio() {
-  const insignia = (p) => p.nivel === 2 ? `<span class="ins mega">🔥 MEGA · ${esc(p.motivo)}</span>` : p.nivel === 1 ? `<span class="ins imp">⭐ ${esc(p.motivo)}</span>` : '';
-  $('estudio').innerHTML = `<p class="nota-pie" style="margin:0">Partidos terminados de hoy y de ayer. Elegí uno, revisá los textos y tocá <b>Crear video</b>: en unos 35 segundos se descarga listo para Instagram, con su portada.</p>
-    ${EST.lista.map((p, i) => `<section class="tarjeta est-p ${p.nivel === 2 ? 'mega' : ''}">
-      <button class="est-cab" data-est="${i}">
-        <span style="display:flex;justify-content:space-between;align-items:center;gap:8px"><small>${p.dia === 'hoy' ? 'Hoy' : 'Ayer'} · ${esc(p.ligaNombre)}</small>${insignia(p)}</span>
-        <span class="est-res"><span class="est-k">${camisetaPixel(p.kitL)}</span><b>${esc(p.local.nombre)}</b><strong>${p.gl ?? 0} - ${p.gv ?? 0}</strong><b>${esc(p.visitante.nombre)}</b><span class="est-k">${camisetaPixel(p.kitV)}</span></span>
-        <small>${p.vivo ? '🔴 En juego: esperá al final para el video' : 'Final'}</small></button>
-      <div id="estEd${i}"></div></section>`).join('')}`;
-  document.querySelectorAll('[data-est]').forEach(b => b.onclick = () => abrirEditor(+b.dataset.est));
-}
-function minNum(m) { const x = String(m || '').match(/(\d+)(?:\s*\+\s*(\d+))?/); return x ? +x[1] + (x[2] ? +x[2] / 100 : 0) : 0; }
-function sugerir(p, goles) {
-  const gl = p.gl ?? 0, gv = p.gv ?? 0, dif = Math.abs(gl - gv);
-  const gana = gl > gv ? p.local.nombre : p.visitante.nombre;
-  const ultimo = goles.length ? goles[goles.length - 1] : null;
-  let tag, titulo;
-  if (gl === gv) { tag = '🤝 EMPATE'; titulo = gl === 0 ? 'SIN GOLES\nEN LA CANCHA' : 'REPARTIERON\nPUNTOS'; }
-  else if (dif >= 3) { tag = '💥 GOLEADA'; titulo = `${gana.toUpperCase()}\nGOLEÓ`; }
-  else if (ultimo && minNum(ultimo.minuto) >= 85 && dif === 1) { tag = '🔥 AGÓNICO'; titulo = 'LO GANÓ\nSOBRE EL FINAL'; }
-  else { tag = '✅ TRIUNFO'; titulo = `GANÓ\n${gana.toUpperCase()}`; }
-  if (p.nivel === 2) tag = p.motivo === 'Superclásico' ? '🔥 SUPERCLÁSICO' : '🏆 FINAL';
-  const autores = [...new Set(goles.map(g => (g.jugador || '').split(' ').slice(-1)[0]).filter(Boolean))];
-  const sub = autores.length ? 'Goles de ' + (autores.length > 1 ? autores.slice(0, -1).join(', ') + ' y ' + autores.slice(-1) : autores[0]) : `${p.local.nombre} ${gl} - ${gv} ${p.visitante.nombre}`;
-  return { tag, titulo, sub };
-}
-async function abrirEditor(i) {
-  const p = EST.lista[i], el = $('estEd' + i);
-  if (EST.abierto === i) { el.innerHTML = ''; EST.abierto = null; return; }
-  if (EST.abierto !== null) { const prev = $('estEd' + EST.abierto); if (prev) prev.innerHTML = ''; }
-  EST.abierto = i;
-  if (p.vivo) { el.innerHTML = '<div class="aviso" style="padding:12px">El partido todavía se está jugando. Volvé cuando termine.</div>'; return; }
-  el.innerHTML = '<div class="cargando">Buscando los goles…</div>';
-  let det = null; try { det = await pedir('/api/partido?id=' + p.id); } catch (e) {}
-  const goles = ((det && det.goles) || []).slice().sort((a, b) => minNum(a.minuto) - minNum(b.minuto));
-  EST.goles[p.id] = { goles, estadio: (det && det.estadio) || '' };
-  const s = sugerir(p, goles);
-  el.innerHTML = `<div class="est-ed">
-    ${goles.length ? `<small>⚽ ${goles.map(g => `${esc(g.jugador)} ${esc(String(g.minuto))}'`).join(' · ')}</small>` : `<small>Para esta liga no tenemos quién hizo los goles: el video muestra el resultado final.</small>`}
-    <label>Cartel<input id="eTag" value="${esc(s.tag)}" maxlength="28"></label>
-    <label>Título (2 renglones; el segundo va en azul)<textarea id="eTit" rows="2" maxlength="40">${esc(s.titulo)}</textarea></label>
-    <label>Texto de abajo<input id="eSub" value="${esc(s.sub)}" maxlength="60"></label>
-    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="boton" id="eVideo" style="flex:1">🎬 Crear video</button><button class="boton sec" id="ePortada">🖼️ Portada</button></div>
-    <p class="nota-pie" style="margin:0">Mientras se graba no cambies de pestaña ni bloquees el celular.</p></div>`;
-  const textos = () => ({ tag: $('eTag').value.trim(), titulo: $('eTit').value.trim(), sub: $('eSub').value.trim() });
-  $('eVideo').onclick = () => crearVideo(p, textos());
-  $('ePortada').onclick = () => crearPortada(p, textos());
-}
-
-/* ----- dibujo en canvas ----- */
-const VW = 1080, VH = 1920;
-const F_TIT = 'Montserrat, "Inter Display", Inter, sans-serif', F_TXT = 'Inter, sans-serif';
-async function prepararRecursos(p) {
-  try { await Promise.all(['900 80px Montserrat', '800 40px Montserrat', '700 40px Inter', '600 40px Inter'].map(f => document.fonts.load(f))); } catch (e) {}
-  if (!EST.logo) EST.logo = await logoSinFondo();
-  const cargar = (kit) => new Promise(ok => {
-    const clave = JSON.stringify(kit); if (EST.kits[clave]) return ok(EST.kits[clave]);
-    const img = new Image(); img.onload = () => { EST.kits[clave] = img; ok(img); }; img.onerror = () => ok(null);
-    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(camisetaPixel(kit).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
-  });
-  return { kL: await cargar(p.kitL), kV: await cargar(p.kitV) };
-}
-function logoSinFondo() {  // el escudo tiene un fondo oscuro cuadrado: se lo saca para que no se vea el cuadrado
-  return new Promise(ok => {
-    const img = new Image(); img.onload = () => {
-      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
-      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
-      try {
-        const d = x.getImageData(0, 0, c.width, c.height), px = d.data, W = c.width, H = c.height, visto = new Uint8Array(W * H);
-        const pila = [0, W - 1, (H - 1) * W, H * W - 1];
-        while (pila.length) {
-          const i = pila.pop(); if (i < 0 || i >= W * H || visto[i]) continue; visto[i] = 1;
-          const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
-          if (r > 32 || g > 36 || b > 44) continue;
-          px[i * 4 + 3] = 0; const xx = i % W;
-          if (xx > 0) pila.push(i - 1); if (xx < W - 1) pila.push(i + 1); pila.push(i - W, i + W);
-        }
-        x.putImageData(d, 0, 0);
-      } catch (e) {}
-      ok(c);
-    };
-    img.onerror = () => ok(null); img.src = '/logo.png';
-  });
-}
-function rr(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
-function texto(c, s, x, y, tam, peso, color, alin = 'center', maxW = 980, fam = F_TIT) {
-  let t = tam; c.font = `${peso} ${t}px ${fam}`;
-  while (c.measureText(s).width > maxW && t > 18) { t -= 2; c.font = `${peso} ${t}px ${fam}`; }
-  c.fillStyle = color; c.textAlign = alin; c.textBaseline = 'middle'; c.fillText(s, x, y);
-}
-const cl01 = (x) => Math.max(0, Math.min(1, x));
-const eOut = (x) => 1 - Math.pow(1 - cl01(x), 3);
-const eBack = (x) => { x = cl01(x); const k = 1.7; return 1 + (k + 1) * Math.pow(x - 1, 3) + k * Math.pow(x - 1, 2); };
-function fondo(c, t, acento) {
-  c.fillStyle = '#070B14'; c.fillRect(0, 0, VW, VH);
-  c.strokeStyle = 'rgba(79,143,247,.08)'; c.lineWidth = 2; const off = (t * 30) % 90;
-  c.beginPath(); for (let x = 0; x <= VW; x += 90) { c.moveTo(x, 0); c.lineTo(x, VH); } for (let y = -90 + off; y <= VH; y += 90) { c.moveTo(0, y); c.lineTo(VW, y); } c.stroke();
-  c.fillStyle = acento; c.fillRect(0, 0, VW, 14); c.fillRect(0, VH - 14, VW, 14);
-}
-function logo(c, cx, cy, tam, brillo = true) {
-  if (!EST.logo) return;
-  c.save(); if (brillo) { c.shadowColor = 'rgba(79,143,247,.55)'; c.shadowBlur = tam * 0.12; }
-  c.drawImage(EST.logo, cx - tam / 2, cy - tam / 2, tam, tam); c.restore();
-}
-function marca(c, y) { logo(c, VW / 2, y + 115, 230); c.font = `900 58px ${F_TIT}`; c.textBaseline = 'middle'; const w1 = c.measureText('TIKI').width, w2 = c.measureText('DATA').width;
-  c.textAlign = 'left'; c.fillStyle = '#EEF2F7'; c.fillText('TIKI', VW / 2 - (w1 + w2) / 2, y + 270); c.fillStyle = '#4F8FF7'; c.fillText('DATA', VW / 2 - (w1 + w2) / 2 + w1, y + 270); }
-function kitCaja(c, img, cx, cy, tam) {
-  rr(c, cx - tam / 2 - 22, cy - tam / 2 - 22, tam + 44, tam + 44, 40); c.fillStyle = '#16294A'; c.fill(); c.lineWidth = 3; c.strokeStyle = '#263A5C'; c.stroke();
-  if (img) { c.imageSmoothingEnabled = false; c.drawImage(img, cx - tam / 2, cy - tam / 2, tam, tam); c.imageSmoothingEnabled = true; }
-}
-function pill(c, s, cx, cy, color, esc_ = 1) {
-  c.save(); c.translate(cx, cy); c.scale(esc_, esc_);
-  c.font = `900 44px ${F_TIT}`; const w = c.measureText(s).width + 80;
-  rr(c, -w / 2, -42, w, 84, 42); c.fillStyle = color; c.fill(); texto(c, s, 0, 2, 44, 900, '#fff'); c.restore();
-}
-function tituloLineas(c, s, cy, tam, ac) {
-  const ls = s.split('\n').filter(Boolean).slice(0, 3);
-  ls.forEach((l, i) => texto(c, l, VW / 2, cy + (i - (ls.length - 1) / 2) * tam * 1.0, tam, 900, i === ls.length - 1 && ls.length > 1 ? ac : '#EEF2F7'));
-}
-function colorMin(kit) { const c1 = (kit.c1 || '').toUpperCase(); return ['#FFFFFF', '#FFF', 'WHITE', '#EFE3C2'].includes(c1) ? '#2A2F3A' : kit.c1; }
-function guion(p, info, tx) {
-  const mega = p.nivel === 2, ac = mega ? '#F5C400' : '#4F8FF7';
-  const goles = info.goles;
-  // secuencia de goles: si no tenemos quién los hizo, solo el resultado final
-  let pasos = [], l = 0, v = 0;
-  goles.forEach(g => { if (g.equipo === p.local.id) l++; else v++; pasos.push({ l, v, g }); });
-  if (!goles.length || l !== (p.gl ?? 0) || v !== (p.gv ?? 0)) pasos = [{ l: p.gl ?? 0, v: p.gv ?? 0, g: null }];
-  const porGol = pasos.length > 4 ? 1.7 : 2.4;
-  const D = { tapa: 1.5, intro: 3, res: 1.6 + pasos.length * porGol + 1.4, lista: goles.length && pasos[0].g ? 5 : 0, dato: 4.2, fin: 4.5 };
-  const S = {}; let t0 = 0; for (const k of ['tapa', 'intro', 'res', 'lista', 'dato', 'fin']) { S[k] = [t0, t0 + D[k]]; t0 += D[k]; }
-  return { mega, ac, pasos, porGol, S, total: t0, goles: pasos[0].g ? goles : [] };
-}
-function dibujarPortada(c, p, k, tx, ac) {
-  fondo(c, 0, ac);
-  const g = c.createRadialGradient(VW / 2, 760, 50, VW / 2, 760, 620); g.addColorStop(0, ac === '#F5C400' ? 'rgba(245,196,0,.22)' : 'rgba(47,107,219,.30)'); g.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = g; c.fillRect(0, 0, VW, VH);
-  logo(c, VW / 2 - 110, 165, 150); texto(c, 'TIKI', VW / 2 + 20, 168, 62, 900, '#EEF2F7', 'left'); c.font = `900 62px ${F_TIT}`; texto(c, 'DATA', VW / 2 + 20 + c.measureText('TIKI').width, 168, 62, 900, '#4F8FF7', 'left');
-  texto(c, `${(p.ligaNombre || '').toUpperCase()}${p.jornada ? ' · FECHA ' + p.jornada : p.fase ? ' · ' + String(p.fase).toUpperCase() : ''}`, VW / 2, 330, 36, 800, '#8FB8FA', 'center', 980, F_TXT);
-  kitCaja(c, k.kL, 300, 560, 290); kitCaja(c, k.kV, 780, 560, 290);
-  texto(c, p.local.nombre, 300, 790, 56, 900, '#EEF2F7', 'center', 440); texto(c, p.visitante.nombre, 780, 790, 56, 900, '#EEF2F7', 'center', 440);
-  texto(c, `${p.gl ?? 0}`, VW / 2 - 190, 1010, 280, 900, '#EEF2F7'); texto(c, '-', VW / 2, 1010, 280, 900, ac); texto(c, `${p.gv ?? 0}`, VW / 2 + 190, 1010, 280, 900, '#EEF2F7');
-  pill(c, tx.tag || '⚽ FINAL', VW / 2, 1230, '#E5332A');
-  tituloLineas(c, tx.titulo || '', 1410, 100, ac);
-  texto(c, tx.sub || '', VW / 2, 1600, 40, 600, '#C9CFD8', 'center', 960, F_TXT);
-}
-function dibujarCuadro(c, t, p, k, tx, G, info) {
-  const { S, ac, pasos, porGol, mega } = G;
-  if (t < S.tapa[1]) { dibujarPortada(c, p, k, tx, ac); return; }
-  fondo(c, t, ac);
-  const op = (a, b) => Math.min(cl01((t - a) / .35), cl01((b - t) / .35));
-  const capa = (key, fn) => { const [a, b] = S[key]; if (t < a || t > b) return; c.save(); c.globalAlpha = key === 'fin' ? cl01((t - a) / .35) : op(a, b); fn(t - a); c.restore(); };
-  capa('intro', u => {
-    c.save(); c.translate(VW / 2, 720); const e = 0.6 + 0.4 * eBack(u / .8); c.scale(e, e); c.rotate((1 - eOut(u / .8)) * -0.2); logo(c, 0, 0, 520); c.restore();
-    texto(c, `${(p.ligaNombre || '').toUpperCase()}${p.jornada ? ' · FECHA ' + p.jornada : ''}`, VW / 2, 1050, 34, 800, '#8FB8FA', 'center', 980, F_TXT);
-    tituloLineas(c, mega ? (p.motivo === 'Superclásico' ? 'EL\nSUPERCLÁSICO' : 'LA GRAN\nFINAL') : (p.dia === 'hoy' ? 'EL PARTIDO\nDE HOY' : 'EL PARTIDO\nDE AYER'), 1230, 120, ac);
-  });
-  capa('res', u => {
-    marca(c, 40);
-    texto(c, (p.ligaNombre || '').toUpperCase(), VW / 2, 680, 36, 800, '#8FB8FA', 'center', 980, F_TXT);
-    const ent = eOut(u / .6);
-    c.save(); c.translate((1 - ent) * -500, 0); kitCaja(c, k.kL, 300, 880, 260); texto(c, p.local.nombre, 300, 1090, 54, 900, '#EEF2F7', 'center', 430); c.restore();
-    c.save(); c.translate((1 - ent) * 500, 0); kitCaja(c, k.kV, 780, 880, 260); texto(c, p.visitante.nombre, 780, 1090, 54, 900, '#EEF2F7', 'center', 430); c.restore();
-    let act = null, idx = -1; pasos.forEach((ps, i) => { if (u >= 1.6 + i * porGol) { act = ps; idx = i; } });
-    const tg = idx >= 0 ? 1.6 + idx * porGol : 0, pop = idx >= 0 ? 1 + .25 * Math.max(0, 1 - Math.abs(u - tg) * 5) : 1;
-    const L = act ? act.l : 0, V = act ? act.v : 0;
-    const subeL = act && (idx === 0 ? act.l > 0 : act.l > pasos[idx - 1].l), subeV = act && (idx === 0 ? act.v > 0 : act.v > pasos[idx - 1].v);
-    c.save(); c.translate(VW / 2 - 200, 1330); c.scale(subeL ? pop : 1, subeL ? pop : 1); texto(c, String(L), 0, 0, 260, 900, '#EEF2F7'); c.restore();
-    texto(c, '-', VW / 2, 1330, 260, 900, ac);
-    c.save(); c.translate(VW / 2 + 200, 1330); c.scale(subeV ? pop : 1, subeV ? pop : 1); texto(c, String(V), 0, 0, 260, 900, '#EEF2F7'); c.restore();
-    if (info.estadio) texto(c, info.estadio, VW / 2, 1500, 38, 600, '#8E9AAE', 'center', 960, F_TXT);
-    if (act) {  // notificación de Tiki Data
-      const d = u - tg, entra = eOut(d / .35), sale = eOut((d - (porGol - .55)) / .3);
-      const eq = act.g ? (act.g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre) : '';
-      const t1 = act.g ? `⚽ ¡GOL de ${eq}!` : '🏁 ¡Final del partido!';
-      const t2 = act.g ? `${act.g.jugador} ${act.g.minuto}'  ·  ${p.local.nombre} ${act.l} - ${act.v} ${p.visitante.nombre}` : `${p.local.nombre} ${act.l} - ${act.v} ${p.visitante.nombre}`;
-      c.save(); c.globalAlpha *= cl01(entra - sale); c.translate((1 - entra) * 1100 - sale * 1100, 0);
-      rr(c, 60, 440, 960, 190, 40); c.fillStyle = 'rgba(28,40,68,.97)'; c.fill(); c.lineWidth = 2; c.strokeStyle = '#34507E'; c.stroke();
-      rr(c, 94, 481, 108, 108, 26); c.fillStyle = '#070B14'; c.fill(); logo(c, 148, 535, 96, false);
-      texto(c, 'TIKI DATA', 232, 488, 30, 600, '#AEB9CC', 'left', 600, F_TXT); texto(c, 'ahora', 990, 488, 30, 600, '#AEB9CC', 'right', 200, F_TXT);
-      texto(c, t1, 232, 538, 46, 900, '#EEF2F7', 'left', 750); texto(c, t2, 232, 590, 31, 600, '#DCE3EE', 'left', 750, F_TXT);
-      c.restore();
-    }
-  });
-  capa('lista', u => {
-    marca(c, 40);
-    const gs = G.goles.slice(0, 6), alto = gs.length > 4 ? 150 : 190, y0 = 760 - (gs.length > 4 ? 40 : 0);
-    texto(c, 'LOS GOLES', VW / 2, 620, 100, 900, '#EEF2F7');
-    let l = 0, v = 0;
-    gs.forEach((g, i) => {
-      if (g.equipo === p.local.id) l++; else v++;
-      const kk = eOut((u - .3 - i * .55) / .5), y = y0 + i * (alto + 20);
-      c.save(); c.globalAlpha *= kk; c.translate((1 - kk) * 300, 0);
-      rr(c, 90, y, 900, alto, 28); c.fillStyle = '#0D1626'; c.fill(); c.lineWidth = 3; c.strokeStyle = i === gs.length - 1 ? ac : '#1C2B47'; c.stroke();
-      const kit = g.equipo === p.local.id ? p.kitL : p.kitV;
-      rr(c, 124, y + (alto - 120) / 2, 120, 120, 22); c.fillStyle = colorMin(kit); c.fill();
-      texto(c, `${g.minuto}'`, 184, y + alto / 2 + 2, 48, 900, '#fff', 'center', 110);
-      texto(c, g.jugador || 'Gol', 280, y + alto / 2 - 24, 48, 900, '#EEF2F7', 'left', 680);
-      texto(c, `${g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre} · ${l} - ${v}${g.tipo === 'PENALTY' ? ' · de penal' : g.tipo === 'OWN' ? ' · en contra' : ''}`, 280, y + alto / 2 + 30, 32, 600, '#8E9AAE', 'left', 680, F_TXT);
-      c.restore();
-    });
-  });
-  capa('dato', u => {
-    pill(c, tx.tag || '⚽', VW / 2, 640, '#E5332A', eBack(u / .5));
-    tituloLineas(c, tx.titulo || '', 930, 150, ac);
-    texto(c, tx.sub || '', VW / 2, 1220, 50, 700, '#EEF2F7', 'center', 960, F_TXT);
-    texto(c, `${p.local.nombre} ${p.gl ?? 0} - ${p.gv ?? 0} ${p.visitante.nombre}`, VW / 2, 1310, 40, 600, '#8E9AAE', 'center', 960, F_TXT);
-  });
-  capa('fin', u => {
-    c.save(); c.translate(VW / 2, 640); const e = 0.6 + 0.4 * eBack(u / .7); c.scale(e, e); logo(c, 0, 0, 440); c.restore();
-    tituloLineas(c, 'SEGUÍ TODO\nEN TIKI DATA', 1020, 96, ac);
-    texto(c, 'Resultados en vivo · Avisos de gol · Noticias · Trivia', VW / 2, 1180, 40, 600, '#C9CFD8', 'center', 980, F_TXT);
-    const s = 1 + .05 * Math.sin(Math.max(0, u - .8) * 5);
-    c.save(); c.translate(VW / 2, 1340); c.scale(s, s); rr(c, -340, -62, 680, 124, 30); c.fillStyle = ac; c.fill(); texto(c, location.host || 'tikidata.onrender.com', 0, 2, 48, 900, '#05070D', 'center', 620); c.restore();
-    texto(c, '👆 Link en la bio · Es gratis', VW / 2, 1480, 40, 700, '#8FB8FA', 'center', 980, F_TXT);
-  });
-}
-function nombreArchivo(p, ext) { const n = (s) => normalizarJS(s).replace(/\s+/g, '_'); return `TikiData_${n(p.local.nombre)}_${n(p.visitante.nombre)}.${ext}`; }
-function normalizarJS(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim(); }
-function bajar(blob, nombre) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nombre; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
-async function crearPortada(p, tx) {
-  const k = await prepararRecursos(p);
-  const cv = document.createElement('canvas'); cv.width = VW; cv.height = VH;
-  dibujarPortada(cv.getContext('2d'), p, k, tx, p.nivel === 2 ? '#F5C400' : '#4F8FF7');
-  cv.toBlob(b => bajar(b, nombreArchivo(p, 'png').replace('.png', '_portada.png')), 'image/png');
-}
-async function crearVideo(p, tx) {
-  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) { alertaSimple('Este navegador no puede grabar videos. Probá con Google Chrome.'); return; }
-  const info = EST.goles[p.id] || { goles: [], estadio: '' };
-  const k = await prepararRecursos(p);
-  const G = guion(p, info, tx);
-  const cv = document.createElement('canvas'); cv.width = VW; cv.height = VH; const c = cv.getContext('2d');
-  const tipos = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
-  const tipo = tipos.find(x => MediaRecorder.isTypeSupported(x)) || '';
-  const capa = document.createElement('div'); capa.className = 'est-grab';
-  capa.innerHTML = `<div class="est-grab-in"><b>🎬 Grabando el video…</b><div class="est-prev"></div><div class="barra-tiempo"><div id="estBarra" style="width:0%"></div></div>
-    <small>No cambies de pestaña ni bloquees la pantalla. Tarda ${Math.round(G.total)} segundos.</small></div>`;
-  capa.querySelector('.est-prev').appendChild(cv); document.body.appendChild(capa);
-  dibujarCuadro(c, 0, p, k, tx, G, info);
-  const flujo = cv.captureStream(30), partes = [];
-  const rec = new MediaRecorder(flujo, tipo ? { mimeType: tipo, videoBitsPerSecond: 8000000 } : undefined);
-  rec.ondataavailable = e => { if (e.data && e.data.size) partes.push(e.data); };
-  const fin = new Promise(ok => rec.onstop = ok);
-  rec.start(500);
-  const inicio = performance.now();
-  await new Promise(ok => {
-    const cuadro = () => {
-      const t = (performance.now() - inicio) / 1000;
-      dibujarCuadro(c, Math.min(t, G.total), p, k, tx, G, info);
-      const barra = document.getElementById('estBarra'); if (barra) barra.style.width = (100 * t / G.total) + '%';
-      if (t >= G.total + 0.3) return ok();
-      requestAnimationFrame(cuadro);
-    };
-    requestAnimationFrame(cuadro);
-  });
-  rec.stop(); await fin; flujo.getTracks().forEach(tr => tr.stop());
-  const mime = rec.mimeType || tipo || 'video/webm', ext = mime.includes('mp4') ? 'mp4' : 'webm';
-  bajar(new Blob(partes, { type: mime }), nombreArchivo(p, ext));
-  capa.querySelector('.est-grab-in').innerHTML = `<b>✅ ¡Video listo!</b><p style="margin:8px 0;font-size:14px;color:#C7D2E0">Se descargó <b>${esc(nombreArchivo(p, ext))}</b>.${ext === 'webm' ? '<br>Ojo: salió en formato WEBM. Para Instagram conviene MP4: hacelo desde Google Chrome.' : ''}</p>
-    <div style="display:flex;gap:8px"><button class="boton" id="estPortada" style="flex:1">🖼️ Bajar portada</button><button class="boton sec" id="estCerrar">Cerrar</button></div>`;
-  $('estPortada').onclick = () => crearPortada(p, tx);
-  $('estCerrar').onclick = () => capa.remove();
-}
-function alertaSimple(msg) {
-  const d = document.createElement('div'); d.className = 'est-grab';
-  d.innerHTML = `<div class="est-grab-in"><b>${esc(msg)}</b><button class="boton" style="margin-top:12px;width:100%">Entendido</button></div>`;
-  d.querySelector('button').onclick = () => d.remove(); document.body.appendChild(d);
-}
-
 /* ---------- En vivo gratis: transmisiones oficiales de YouTube ---------- */
 async function vistaEnVivo(idVideo) {
   $('vista').innerHTML = volver('En vivo gratis') + '<main id="vivo"><div class="cargando">Buscando partidos en vivo…</div></main>';
@@ -3378,18 +3238,20 @@ function dibujarCalendario() {
 
 /* ---------- Jugadores: goleadores, perfil y comparador ---------- */
 const cacheGol = {};
-async function goleadores(cod) { if (!cacheGol[cod]) cacheGol[cod] = await pedir('/api/goleadores?liga=' + cod); return cacheGol[cod]; }
+async function goleadores(cod) { if (!cacheGol[cod]) { const d = await pedir('/api/goleadores?liga=' + cod); if (d.calculando) return d; cacheGol[cod] = d; } return cacheGol[cod]; }
 function listaGoleadores(d, cod) {
   cacheGol[cod] = d;
-  if (!d.goleadores.length) return `<div class="tarjeta aviso">${HL.includes(cod) ? 'La tabla de goleadores de este torneo llega más adelante.' : 'Todavía no hay goleadores.'}</div>`;
+  if (d.calculando) { delete cacheGol[cod]; return '<div class="tarjeta aviso">Estamos contando los goles de todos los partidos del torneo. En unos minutos aparece la tabla.</div>'; }
+  if (!d.goleadores.length) return `<div class="tarjeta aviso">${HL.includes(cod) && !CON_GOL.includes(cod) ? 'La tabla de goleadores de este torneo llega más adelante.' : 'Todavía no hay goleadores.'}</div>`;
   return `<section class="tarjeta">${d.goleadores.map((j, i) => `<a class="jug" href="#/jugador/${cod}/${j.id}">
     <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span>${caraHTML(j)}
     <span style="min-width:0"><b class="nom" style="display:block;font-size:14px">${esc(j.nombre)}</b><small style="color:var(--suave);display:flex;align-items:center;gap:6px">${escudo(j.equipo)}${esc(j.equipo.nombre)}</small></span>
     <span style="text-align:right"><span class="goles">${j.goles}</span><br><small style="color:var(--suave)">${j.asistencias} asist.</small></span></a>`).join('')}</section>`;
 }
-let ligaJug = 'PD';
+let ligaJug = LIGAS.LPF ? 'LPF' : 'PD';
+function ligasGol() { return CON_GOL.filter(c => LIGAS[c]).concat(Object.keys(LIGAS).filter(c => !HL.includes(c))); }
 async function vistaJugadores() {
-  $('vista').innerHTML = volver('Goleadores') + `<main><div class="chips">${Object.keys(LIGAS).filter(c => !HL.includes(c)).map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
+  $('vista').innerHTML = volver('Goleadores') + `<main><div class="chips">${ligasGol().map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <a class="boton sec" href="#/comparar">Comparar dos jugadores</a><div id="lista"><div class="cargando">Cargando…</div></div></main>`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaJug = b.dataset.l; vistaJugadores(); });
   try { $('lista').innerHTML = listaGoleadores(await goleadores(ligaJug), ligaJug); cargarFotos($('lista')); } catch (e) { $('lista').innerHTML = error(e); }
@@ -3447,7 +3309,7 @@ async function vistaComparar(cod, idA) {
     });
   };
   $('vista').innerHTML = volver('Comparar jugadores', '#/jugadores') + `<main>
-    <div class="chips">${Object.keys(LIGAS).filter(c => !HL.includes(c)).map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
+    <div class="chips">${ligasGol().map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
     <div id="cuerpo" style="display:flex;flex-direction:column;gap:12px"></div></main>`;
   dibujar();
 }
@@ -3460,7 +3322,7 @@ async function vistaFavoritos() {
     <p class="nota-pie" style="margin:0">Tocá la estrella de los clubes que querés seguir. Sus partidos aparecen primero en el Inicio. Se guardan en este dispositivo.</p>
     ${bloqueAvisos()}
     ${favs.length ? `<section class="tarjeta pad"><b style="font-size:14px">Elegidos (${favs.length})</b><div class="chips" style="margin-top:10px">${favs.map(f => `<button class="chip on" data-quitar="${f.id}">${escudo(f)}${esc(f.nombre)} ✕</button>`).join('')}</div></section>` : ''}
-    <div class="chips">${Object.keys(LIGAS).filter(c => !['CL', 'WC', 'CAR', 'LIB', 'SUD'].includes(c)).map(c => `<button class="chip ${c === ligaFav ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
+    <div class="chips">${Object.keys(LIGAS).filter(c => !['CL', 'WC', 'CAR', 'LIB', 'SUD', 'UEL', 'UECL', 'FAC', 'CDR', 'CIT', 'DFB', 'CDF', 'CAM', 'EURO'].includes(c)).map(c => `<button class="chip ${c === ligaFav ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <div id="clubes"><div class="cargando">Cargando clubes…</div></div></main>`;
   activarBloqueAvisos(vistaFavoritos);
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaFav = b.dataset.l; vistaFavoritos(); });
@@ -3685,7 +3547,6 @@ function ruta() {
   if (v === 'favoritos') return vistaFavoritos();
   if (v === 'envivo') return vistaEnVivo(a);
   if (v === 'trivia') return vistaTrivia();
-  if (v === 'estudio') return vistaEstudio();
   if (v === 'club') return vistaClub(a);
   if (v === 'ficha') return vistaFicha(a);
   vistaInicio();
@@ -3802,6 +3663,7 @@ window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); pedi
 window.addEventListener('appinstalled', () => { pedidoInstalar = null; activarInstalar(); });
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 armarMenu();
+cargarEmblemas();
 activarInstalar();
 revisarGoles();
 window.addEventListener('hashchange', ruta);
@@ -3889,8 +3751,9 @@ class Manejador(BaseHTTPRequestHandler):
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
         liga = q.get("liga", "")
         if url.path == "/":
-            visibles = {**({k: list(v) for k, v in HL_LIGAS.items()} if HL_KEY else {}), **{k: list(v) for k, v in LIGAS.items()}}
-            pagina = PAGINA.replace("__LIGAS__", json.dumps(visibles, ensure_ascii=False)).replace("__HL__", json.dumps(list(HL_LIGAS) if HL_KEY else [])).replace("__CONTADOR__", (
+            hl_vis = [k for k in HL_LIGAS if k not in _hl_no_encontradas] if HL_KEY else []
+            visibles = {**{k: list(HL_LIGAS[k]) for k in hl_vis}, **{k: list(v) for k, v in LIGAS.items()}}
+            pagina = PAGINA.replace("__LIGAS__", json.dumps(visibles, ensure_ascii=False)).replace("__HL__", json.dumps(hl_vis)).replace("__CONTADOR__", (
                 f'<script data-goatcounter="https://{GOATCOUNTER}.goatcounter.com/count" data-goatcounter-settings=\'{{"no_onload": true}}\' async src="https://gc.zgo.at/count.js"></script>'
                 if GOATCOUNTER else ""))
             self.responder(200, "text/html; charset=utf-8", pagina)
@@ -3925,8 +3788,6 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_goleadores(liga))
         elif url.path == "/api/equipos":
             self.json(lambda: datos_equipos(liga))
-        elif url.path == "/api/estudio":
-            self.json(datos_estudio)
         elif url.path == "/api/envivo":
             self.json(datos_en_vivo)
         elif url.path == "/api/resumen" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
@@ -3943,6 +3804,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_proximos(q["equipo"]))
         elif url.path == "/api/estadisticas" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_estadisticas_hl(q["id"][1:]))
+        elif url.path == "/api/emblemas":
+            self.json(datos_emblemas)
         elif url.path == "/api/hl_estado":
             self.json(hl_estado)
         elif url.path == "/api/noticias":
@@ -3965,6 +3828,8 @@ if __name__ == "__main__":
     puerto_web = os.environ.get("PORT")
     # Prepara las noticias apenas arranca, así el primero que entra no espera
     threading.Thread(target=lambda: traer_todas(), daemon=True).start()
+    if HL_KEY:
+        threading.Thread(target=goleadores_al_arrancar, daemon=True).start()
     if puerto_web:
         # Modo internet (Render): escucha en el puerto que le da el servicio
         servidor = ThreadingHTTPServer(("0.0.0.0", int(puerto_web)), Manejador)
