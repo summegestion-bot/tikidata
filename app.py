@@ -111,7 +111,7 @@ def api(ruta, ttl=120):
             continue
         break
     if r.status_code == 403:
-        raise RuntimeError("Ese dato no está incluido en el plan gratuito de la API.")
+        raise RuntimeError("Ese dato no está disponible por ahora.")
     if r.status_code != 200:
         try:
             msg = r.json().get("message", "")
@@ -437,6 +437,8 @@ _EXCLUIR = (" reserva", " reserve", " femen", " women", " sub ", " u20", " u17",
 # Ligas nuevas del plan PRO: código -> (nombre, región, búsquedas, palabras que tiene que tener el nombre)
 NUEVAS_HL = {
     "PNA": ("Primera Nacional", "Argentina", [{"countryCode": "AR"}], [" primera nacional ", " primera b nacional "]),
+    "BMT": ("Primera B Metro", "Argentina", [{"countryCode": "AR"}, {"leagueName": "Primera B Metropolitana"}], [" primera b metropolitana ", " primera b metro ", " b metropolitana "]),
+    "RES": ("Reserva", "Argentina", [{"countryCode": "AR"}], [" reserve", " reserva", " proyeccion "]),
     "URU": ("Liga uruguaya", "Uruguay", [{"countryCode": "UY"}, {"countryName": "Uruguay"}], [" primera division ", " liga auf ", " campeonato uruguayo "]),
     "CHI": ("Liga chilena", "Chile", [{"countryCode": "CL"}, {"countryName": "Chile"}], [" primera division ", " liga de primera "]),
     "COL": ("Liga colombiana", "Colombia", [{"countryCode": "CO"}, {"countryName": "Colombia"}], [" primera a ", " liga betplay ", " liga dimayor "]),
@@ -547,6 +549,9 @@ def datos_emblemas():
 
 
 def _elige(cod, nombre_norm):
+    if cod == "RES":  # la Reserva de la Liga Profesional (no la de otras categorías ni la femenina)
+        return any(p in nombre_norm for p in NUEVAS_HL["RES"][3]) and (" liga profesional " in nombre_norm or " primera division " in nombre_norm or " lpf " in nombre_norm) \
+            and not any(x in nombre_norm for x in (" femen", " women", " nacional ", " primera b "))
     if any(x in nombre_norm for x in _EXCLUIR):
         return False
     if cod in NUEVAS_HL:
@@ -2482,7 +2487,20 @@ main { padding:14px 10px; display:flex; flex-direction:column; gap:14px; }
 .seccion h2 { margin:0; font-weight:900; font-size:22px; }
 .link { font-size:13px; font-weight:600; color:#8DB8FF; padding:8px 0; background:none; border:0; }
 .aviso { padding:22px 16px; text-align:center; color:var(--suave); font-size:14px; line-height:1.5; }
-.cargando { padding:30px; text-align:center; color:var(--suave); }
+.cargando { padding:34px 24px 30px; text-align:center; color:var(--suave); font-weight:600; display:flex; flex-direction:column; align-items:center; gap:10px; }
+/* Pelotita que rebota mientras carga */
+.cargando::before { content:''; order:-2; width:44px; height:44px; border-radius:50%; margin-bottom:0;
+  background:radial-gradient(circle at 50% 50%, #0D1626 0 17%, transparent 18%), radial-gradient(circle at 18% 30%, #0D1626 0 11%, transparent 12%),
+    radial-gradient(circle at 82% 30%, #0D1626 0 11%, transparent 12%), radial-gradient(circle at 30% 85%, #0D1626 0 11%, transparent 12%),
+    radial-gradient(circle at 70% 85%, #0D1626 0 11%, transparent 12%), radial-gradient(circle at 35% 30%, #FFFFFF, #C9D6E8 70%);
+  box-shadow:0 0 0 2px #2F6BDB; animation:rebote .8s cubic-bezier(.5,0,.5,1) infinite alternate, gira 1.6s linear infinite; }
+.cargando::after { content:''; order:-1; width:40px; height:8px; border-radius:50%; background:rgba(79,143,247,.35); margin:-6px 0 8px; animation:sombra .8s cubic-bezier(.5,0,.5,1) infinite alternate; }
+@keyframes rebote { from { transform:translateY(-34px); } to { transform:translateY(0); } }
+@keyframes gira { to { rotate:360deg; } }
+@keyframes sombra { from { transform:scale(.55); opacity:.45; } to { transform:scale(1); opacity:1; } }
+.dato-carga { max-width:300px; font-size:13px; font-weight:600; color:#C7D2E0; line-height:1.45; animation:aparece .4s ease; }
+.dato-carga b { color:#4F8FF7; display:block; font-size:11px; letter-spacing:1px; margin-bottom:2px; }
+@keyframes aparece { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
 .hero { position:relative; display:block; height:300px; border-radius:16px; overflow:hidden; background:var(--sup); }
 .hero img { width:100%; height:100%; object-fit:cover; }
 .hero .capa { position:absolute; left:0; right:0; bottom:0; padding:70px 16px 16px; background:linear-gradient(to top, rgba(5,7,13,.97) 35%, rgba(5,7,13,0)); }
@@ -2708,7 +2726,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 const LIGAS = __LIGAS__;
 const HL = __HL__;  // torneos que vienen de Highlightly
 const CON_GOL = ['LPF'];  // torneos de Highlightly con tabla de goleadores
-const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
+const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', BMT:'#A5B4FC', RES:'#94A3B8', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -2774,8 +2792,31 @@ function volver(titulo, destino='#/') {
 }
 
 /* ---------- Menú y navegación ---------- */
+// Mientras algo carga: datos curiosos que van cambiando
+const DATOS_CARGA = [
+  'El primer Mundial se jugó en Uruguay, en 1930.', 'Argentina ganó 3 Mundiales: 1978, 1986 y 2022.',
+  'Independiente es el club con más Copas Libertadores: 7.', 'Miroslav Klose es el máximo goleador de los Mundiales, con 16 goles.',
+  'El arco mide 7,32 metros de ancho y 2,44 de alto.', 'La pelota oficial pesa entre 410 y 450 gramos.',
+  'La Copa América, de 1916, es el torneo de selecciones más antiguo del mundo.', 'Pelé ganó 3 Mundiales con Brasil.',
+  'La Bombonera se inauguró en 1940.', 'Racing fue el primer club argentino campeón del mundo, en 1967.',
+  'Maradona hizo el "gol del siglo" a Inglaterra en México 86.', 'Boca y River jugaron la final de la Libertadores 2018 en Madrid.',
+  'Las canchas de Racing e Independiente están a unas cuadras de distancia.', 'Messi ganó 8 Balones de Oro.',
+  'Un partido tiene 2 tiempos de 45 minutos, más lo que agregue el árbitro.', 'El Real Madrid ganó 15 Champions League.'
+];
+let datoN = Math.floor(Math.random() * DATOS_CARGA.length);
+function ponerDato(el) {
+  let d = el.querySelector('.dato-carga');
+  if (!d) { d = document.createElement('span'); d.className = 'dato-carga'; el.appendChild(d); }
+  datoN = (datoN + 1) % DATOS_CARGA.length;
+  d.innerHTML = '<b>¿SABÍAS QUE…?</b>' + esc(DATOS_CARGA[datoN]);
+  d.style.animation = 'none'; void d.offsetWidth; d.style.animation = '';
+}
+setInterval(() => document.querySelectorAll('.cargando').forEach(ponerDato), 3500);
+new MutationObserver(() => document.querySelectorAll('.cargando:not([data-dato])').forEach(el => {
+  el.dataset.dato = '1'; setTimeout(() => { if (el.isConnected) ponerDato(el); }, 900);
+})).observe(document.body, { childList: true, subtree: true });
 function armarMenu() {
-  const grupos = [['ARGENTINA', ['LPF','PNA','CAR']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
+  const grupos = [['ARGENTINA', ['LPF','PNA','BMT','RES','CAR']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
     ['NORTEAMÉRICA', ['MLS','LMX']], ['EUROPA', ['CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']],
     ['COPAS DE EUROPA', ['FAC','CDR','CIT','DFB','CDF']], ['ASIA', ['SAU']], ['SELECCIONES', ['WC','CAM','EURO']]]
     .map(([n, cods]) => [n, cods.filter(c => LIGAS[c])]).filter(g => g[1].length);
@@ -3135,9 +3176,9 @@ async function vistaPartido(id) {
         ${p.estadio ? `<div class="dato"><span>Estadio</span><span>${esc(p.estadio)}</span></div>` : ''}
         ${p.arbitro ? `<div class="dato"><span>Árbitro</span><span>${esc(p.arbitro)}</span></div>` : ''}
       </section>
-      ${esHL ? (p.vivo ? '<p class="nota-pie">Se actualiza solo cada uno o dos minutos mientras se juega.</p>' : '') : '<p class="nota-pie">El minuto a minuto, las formaciones y las estadísticas del partido no vienen en el plan gratuito de la API. Se pueden sumar con una API más completa.</p>'}`,
+      ${esHL ? (p.vivo ? '<p class="nota-pie">Se actualiza solo cada uno o dos minutos mientras se juega.</p>' : '') : ''}`,
     () => p.goles.length ? `<section class="tarjeta pad">${p.goles.map(g => `<div class="dato"><span style="color:var(--texto);font-weight:700">${g.minuto ? g.minuto + "'" : ''}</span><span style="flex:1">${esc(g.jugador)}${g.tipo === 'OWN' ? ' (en contra)' : g.tipo === 'PENALTY' ? ' (penal)' : ''}${g.asistencia ? `<br><small style="color:var(--suave)">Asistencia: ${esc(g.asistencia)}</small>` : ''}</span><span>${esc(g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre)}</span></div>`).join('')}</section>`
-      : `<div class="tarjeta aviso">${jugado ? (esHL ? 'Sin goles por ahora.' : 'El plan gratuito de la API no trae quién hizo los goles de este partido.') : 'Todavía no se jugó.'}</div>`,
+      : `<div class="tarjeta aviso">${jugado ? (esHL ? 'Sin goles por ahora.' : 'Todavía no tenemos quién hizo los goles de este partido.') : 'Todavía no se jugó.'}</div>`,
     ...(esHL ? [() => panelFormacion(p), () => '<div id="stats"><div class="cargando">Cargando estadísticas…</div></div>', () => panelMinuto(p), () => panelHistorial(p)] : [() => panelHistorial(p)])
   ];
   function panelHistorial(p) {
@@ -3292,7 +3333,7 @@ async function vistaLiga(cod, pestana) {
 /* ---------- Calendario de todo el año ---------- */
 const cal = { liga: 'ALL', mes: new Date().getMonth(), anio: new Date().getFullYear(), dia: new Date().getDate(), datos: {} };
 async function vistaCalendario() {
-  $('vista').innerHTML = volver('Calendario') + `<main id="panel"><div class="cargando">Cargando el calendario de todas las ligas…<br><small>La primera vez puede tardar hasta un minuto.</small></div></main>`;
+  $('vista').innerHTML = volver('Calendario') + `<main id="panel"><div class="cargando">Armando el calendario de todas las ligas…</div></main>`;
   const cods = Object.keys(LIGAS).filter(c => !HL.includes(c));
   await Promise.all(cods.map(async c => { if (!cal.datos[c]) { try { cal.datos[c] = (await pedir('/api/calendario?liga=' + c)).partidos; } catch (e) { cal.datos[c] = []; } } }));
   dibujarCalendario();
@@ -3449,7 +3490,7 @@ document.addEventListener('click', (e) => {
 const GRUPO_POS = (p) => { p = (p || '').toLowerCase(); if (p.includes('goal')) return 'Arqueros'; if (p.includes('def') || p.includes('back')) return 'Defensores'; if (p.includes('mid')) return 'Mediocampistas'; if (p.includes('off') || p.includes('forw') || p.includes('wing') || p.includes('strik')) return 'Delanteros'; return 'Otros'; };
 async function vistaClub(id) {
   $('vista').innerHTML = volver('Club') + '<div class="cargando" id="cargaClub">Cargando el club…</div>';
-  const aviso = setTimeout(() => { const el = $('cargaClub'); if (el) el.innerHTML = 'Cargando el club…<br><small>Está tardando un poco: la API gratis permite pocos pedidos por minuto. En unos segundos aparece.</small>'; }, 5000);
+  const aviso = 0;
   let c; try { c = await pedir('/api/club?id=' + id); } catch (e) { clearTimeout(aviso); $('vista').innerHTML = volver('Club') + `<main>${error(e)}</main>`; return; }
   clearTimeout(aviso);
   dibujarClub(c);
