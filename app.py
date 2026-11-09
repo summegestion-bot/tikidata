@@ -437,8 +437,11 @@ _EXCLUIR = (" reserva", " reserve", " femen", " women", " sub ", " u20", " u17",
 # Ligas nuevas del plan PRO: código -> (nombre, región, búsquedas, palabras que tiene que tener el nombre)
 NUEVAS_HL = {
     "PNA": ("Primera Nacional", "Argentina", [{"countryCode": "AR"}], [" primera nacional ", " primera b nacional "]),
-    "BMT": ("Primera B Metro", "Argentina", [{"countryCode": "AR"}, {"leagueName": "Primera B Metropolitana"}], [" primera b metropolitana ", " primera b metro ", " b metropolitana "]),
-    "RES": ("Reserva", "Argentina", [{"countryCode": "AR"}], [" reserve", " reserva", " proyeccion "]),
+    "FEDA": ("Federal A", "Argentina", [{"countryCode": "AR"}], [" torneo federal a ", " federal a "]),
+    "PRC": ("Primera C", "Argentina", [{"countryCode": "AR"}], [" primera c "]),
+    "PRD": ("Primera D", "Argentina", [{"countryCode": "AR"}], [" primera d "]),
+    "TDC": ("Trofeo de Campeones", "Argentina", [{"countryCode": "AR"}], [" trofeo de campeones "]),
+    "SCA": ("Supercopa Argentina", "Argentina", [{"countryCode": "AR"}], [" super copa ", " supercopa argentina "]),
     "URU": ("Liga uruguaya", "Uruguay", [{"countryCode": "UY"}, {"countryName": "Uruguay"}], [" primera division ", " liga auf ", " campeonato uruguayo "]),
     "CHI": ("Liga chilena", "Chile", [{"countryCode": "CL"}, {"countryName": "Chile"}], [" primera division ", " liga de primera "]),
     "COL": ("Liga colombiana", "Colombia", [{"countryCode": "CO"}, {"countryName": "Colombia"}], [" primera a ", " liga betplay ", " liga dimayor "]),
@@ -549,9 +552,8 @@ def datos_emblemas():
 
 
 def _elige(cod, nombre_norm):
-    if cod == "RES":  # la Reserva de la Liga Profesional (no la de otras categorías ni la femenina)
-        return any(p in nombre_norm for p in NUEVAS_HL["RES"][3]) and (" liga profesional " in nombre_norm or " primera division " in nombre_norm or " lpf " in nombre_norm) \
-            and not any(x in nombre_norm for x in (" femen", " women", " nacional ", " primera b "))
+    if cod == "SCA" and " international " in nombre_norm:
+        return False
     if any(x in nombre_norm for x in _EXCLUIR):
         return False
     if cod in NUEVAS_HL:
@@ -560,7 +562,7 @@ def _elige(cod, nombre_norm):
         if cod in ("COL", "PER", "BOL", "PAR", "VEN", "CHI", "URU") and (" b " in nombre_norm or " ascenso " in nombre_norm):
             return False
         return any(p in nombre_norm for p in NUEVAS_HL[cod][3])
-    return {"LPF": " liga profesional " in nombre_norm or nombre_norm.strip() == "primera division",
+    return {"LPF": (" liga profesional " in nombre_norm and " copa " not in nombre_norm) or nombre_norm.strip() == "primera division",
             "CAR": " copa argentina " in nombre_norm,
             "LIB": " libertadores " in nombre_norm or " libertadores" in nombre_norm,
             "SUD": " sudamericana " in nombre_norm or " sul americana " in nombre_norm or " sudamericana" in nombre_norm}[cod]
@@ -2730,7 +2732,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 const LIGAS = __LIGAS__;
 const HL = __HL__;  // torneos que vienen de Highlightly
 const CON_GOL = ['LPF'];  // torneos de Highlightly con tabla de goleadores
-const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', BMT:'#A5B4FC', RES:'#94A3B8', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
+const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', FEDA:'#A5B4FC', PRC:'#94A3B8', PRD:'#64748B', TDC:'#F5C400', SCA:'#E879F9', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -2831,7 +2833,7 @@ new MutationObserver(() => document.querySelectorAll('.cargando:not([data-dato])
   setTimeout(() => { if (el.isConnected) ponerDato(el); }, 900);
 })).observe(document.body, { childList: true, subtree: true });
 function armarMenu() {
-  const grupos = [['ARGENTINA', ['LPF','PNA','BMT','RES','CAR']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
+  const grupos = [['ARGENTINA', ['LPF','PNA','FEDA','PRC','PRD','CAR','TDC','SCA']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
     ['NORTEAMÉRICA', ['MLS','LMX']], ['EUROPA', ['CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']],
     ['COPAS DE EUROPA', ['FAC','CDR','CIT','DFB','CDF']], ['ASIA', ['SAU']], ['SELECCIONES', ['WC','CAM','EURO']]]
     .map(([n, cods]) => [n, cods.filter(c => LIGAS[c])]).filter(g => g[1].length);
