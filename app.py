@@ -1122,7 +1122,8 @@ def plantel_hl(id_txt, partidos=5):
 def hl_buscar_ligas():
     """Revisión: todo lo que Highlightly tiene de Argentina, buscado de varias formas (se guarda 1 día)."""
     busquedas = [{"countryCode": "AR"}, {"countryName": "Argentina"}, {"leagueName": "Primera B"}, {"leagueName": "Primera B Metropolitana"},
-                 {"leagueName": "Metropolitana"}, {"leagueName": "Reserve"}, {"leagueName": "Reserva"}, {"leagueName": "Primera B Nacional"}]
+                 {"leagueName": "Metropolitana"}, {"leagueName": "Reserve"}, {"leagueName": "Reserva"}, {"leagueName": "Primera B Nacional"},
+                 {"leagueName": "Femenino"}, {"leagueName": "Femenina"}, {"leagueName": "Women"}, {"leagueName": "Primera A"}]
     res = {}
     for b in busquedas:
         nombres, offset = [], 0
