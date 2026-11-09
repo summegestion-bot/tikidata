@@ -705,10 +705,10 @@ def datos_partido_hl(id_num):
 
             def lado(x):
                 x = x or {}
-                filas = [[{"nombre": j.get("name") or "", "numero": j.get("number")} for j in (fila if isinstance(fila, list) else [fila]) if isinstance(j, dict)]
+                filas = [[{"nombre": j.get("name") or "", "numero": j.get("number"), "posicion": j.get("position") or ""} for j in (fila if isinstance(fila, list) else [fila]) if isinstance(j, dict)]
                          for fila in (x.get("initialLineup") or [])]
                 return {"formacion": x.get("formation") or "", "filas": filas,
-                        "suplentes": [{"nombre": j.get("name") or "", "numero": j.get("number")} for j in (x.get("substitutes") or []) if isinstance(j, dict)]}
+                        "suplentes": [{"nombre": j.get("name") or "", "numero": j.get("number"), "posicion": j.get("position") or ""} for j in (x.get("substitutes") or []) if isinstance(j, dict)]}
             if isinstance(al, dict) and (al.get("homeTeam") or al.get("awayTeam")):
                 res["alineacion"] = {"local": lado(al.get("homeTeam")), "visitante": lado(al.get("awayTeam"))}
         except Exception:
@@ -2442,6 +2442,33 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .linea { display:flex; justify-content:space-around; }
 .slot { display:flex; flex-direction:column; align-items:center; gap:4px; width:64px; }
 .cara { width:46px; height:46px; border-radius:23px; border:2px solid #fff; background:#1B2E4F; color:#fff; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; object-fit:cover; object-position:top; box-shadow:0 2px 8px rgba(0,0,0,.4); }
+.ficha-j { position:relative; width:48px; height:48px; border-radius:24px; border:3px solid var(--c); background:#0D1626; display:flex; align-items:center; justify-content:center; box-shadow:0 0 0 2px rgba(5,7,13,.6), 0 3px 10px rgba(0,0,0,.45); }
+.ficha-j img { width:28px; height:28px; object-fit:contain; }
+.ficha-j .pos-txt { font-size:11px; font-weight:900; color:var(--c); letter-spacing:.3px; }
+.ficha-j .num { position:absolute; right:-6px; bottom:-4px; min-width:19px; height:19px; padding:0 4px; border-radius:10px; background:var(--c); color:#05070D; font-size:10px; font-weight:900; display:flex; align-items:center; justify-content:center; border:2px solid #0D1626; }
+.leyenda-pos { display:flex; flex-wrap:wrap; justify-content:center; gap:6px 14px; padding:0 12px 12px; font-size:11.5px; font-weight:700; color:var(--suave); }
+.leyenda-pos i { display:inline-block; width:10px; height:10px; border-radius:5px; margin-right:5px; vertical-align:-1px; }
+.suplentes { margin:0 12px 12px; border-radius:14px; background:#0A1220; border:1px solid var(--linea); overflow:hidden; }
+.suplentes h3 { margin:0; padding:11px 14px; font-size:13px; letter-spacing:.6px; color:var(--suave); border-bottom:1px solid var(--linea); display:flex; justify-content:space-between; }
+.sup { display:flex; align-items:center; gap:12px; padding:10px 14px; border-top:1px solid rgba(255,255,255,.04); }
+.sup:first-of-type { border-top:0; }
+.sup .num { flex:none; width:32px; height:32px; border-radius:16px; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:13px; background:#16233B; border:2px solid var(--c); color:var(--texto); }
+.sup .n { flex:1; min-width:0; font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.sup .sup-pos { font-size:11px; font-weight:800; padding:3px 8px; border-radius:999px; color:var(--c); background:rgba(255,255,255,.05); white-space:nowrap; }
+.cmp-slots { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.cmp-slot { display:flex; align-items:center; gap:8px; padding:10px; border-radius:14px; background:var(--sup); border:2px solid transparent; text-align:left; min-width:0; }
+.punto-on { display:inline-block; width:7px; height:7px; border-radius:4px; background:var(--cs); margin-left:4px; vertical-align:1px; animation:titila 1.2s infinite; }
+@keyframes titila { 50% { opacity:.25; } }
+.cmp-slot.activo { border-color:var(--cs); box-shadow:0 0 0 3px rgba(79,143,247,.15); }
+.cmp-slot small { display:block; font-size:10px; font-weight:800; letter-spacing:.6px; color:var(--cs); }
+.cmp-slot b { display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.cmp-fila { width:100%; display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:10px; padding:10px 12px; border:0; border-top:1px solid var(--linea); background:transparent; text-align:left; }
+.cmp-fila.elegido { background:rgba(18,58,115,.35); }
+.cmp-fila b { display:block; font-size:14px; } .cmp-fila small { color:var(--suave); font-size:12px; }
+.cmp-fila .esc img, .cmp-slot .esc img { width:26px; height:26px; object-fit:contain; display:block; }
+.cmp-pill { font-size:12px; font-weight:800; padding:6px 12px; border-radius:999px; white-space:nowrap; }
+.cmp-pill.si { background:#123A73; color:#EAF2FF; }
+.cmp-pill.no { background:#8FC9F0; color:#06233F; }
 .nom-slot { font-size:11px; font-weight:700; background:rgba(5,7,13,.75); padding:1px 6px; border-radius:4px; max-width:76px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .creditos { margin:10px 10px 0; padding:22px 12px 26px; border-top:1px solid var(--linea); display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
 .creditos img { width:48px; height:48px; border-radius:10px; object-fit:cover; opacity:.9; }
@@ -2524,6 +2551,7 @@ async function pedir(ruta, intento = 0) {
   }
   return d;
 }
+function escImg(t) { return t && t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : ''; }
 function escudo(t, cls='esc') {
   const club = t && t.id ? ` data-club="${t.id}" role="link" tabindex="0" aria-label="Ver club ${esc(t.nombre)}"` : '';
   return t && t.escudo ? `<img class="${cls}" src="${esc(t.escudo)}" alt="" loading="lazy"${club}>`
@@ -3210,23 +3238,34 @@ async function vistaPartido(id) {
 }
 
 const lado = { local: true };
+const POS_COL = { ARQ:'#F5C451', DEF:'#4F8FF7', MED:'#3DD68C', DEL:'#FF6B6B', SUP:'#8E9AAE' };
+const POS_NOM = { ARQ:'Arquero', DEF:'Defensor', MED:'Mediocampista', DEL:'Delantero', SUP:'Suplente' };
+function posDeTexto(t) { t = (t || '').toLowerCase(); if (t.includes('goal') || t === 'g') return 'ARQ'; if (t.includes('def') || t.includes('back') || t === 'd') return 'DEF'; if (t.includes('mid') || t === 'm') return 'MED'; if (t.includes('att') || t.includes('forw') || t.includes('off') || t.includes('strik') || t.includes('wing') || t === 'f') return 'DEL'; return ''; }
+function posDeFila(i, n) { return i === 0 ? 'ARQ' : i === 1 ? 'DEF' : i === n - 1 ? 'DEL' : 'MED'; }
 function panelFormacion(p) {
   const a = p.alineacion;
   if (!a) return `<div class="tarjeta aviso">${p.terminado || p.vivo ? 'No hay formaciones para este partido.' : 'Las formaciones aparecen cerca de una hora antes del partido.'}</div>`;
   const pintar = (eq, t) => {
     if (!eq || !eq.filas.length) return '<div class="aviso">Sin datos.</div>';
-    const filas = eq.filas.slice().reverse();
-    return `<div class="cancha">${filas.map(f => `<div class="linea">${f.map(j => `<div class="slot">${caraHTML(j, 'cara')}<span class="nom-slot">${j.numero ? j.numero + ' ' : ''}${esc(String(j.nombre).split(' ').slice(-1)[0])}</span></div>`).join('')}</div>`).join('')}</div>
-      ${eq.suplentes.length ? `<div style="padding:0 12px 12px"><b style="font-size:13px">Suplentes</b><div class="chips" style="margin-top:8px">${eq.suplentes.map(j => `<span class="chip" style="cursor:default">${j.numero ? j.numero + ' · ' : ''}${esc(j.nombre)}</span>`).join('')}</div></div>` : ''}`;
+    const n = eq.filas.length;
+    const ficha = (j, pos) => { const c = POS_COL[pos];
+      return `<div class="slot"><div class="ficha-j" style="--c:${c}" title="${POS_NOM[pos]}">${t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : `<span class="pos-txt">${pos}</span>`}${j.numero ? `<span class="num">${j.numero}</span>` : ''}</div>
+        <span class="nom-slot">${esc(String(j.nombre).split(' ').slice(-1)[0])}</span></div>`; };
+    const filas = eq.filas.map((f, i) => f.map(j => ficha(j, posDeTexto(j.posicion) || posDeFila(i, n)))).reverse();
+    const leyenda = ['ARQ', 'DEF', 'MED', 'DEL'].map(k => `<span><i style="background:${POS_COL[k]}"></i>${POS_NOM[k]}</span>`).join('');
+    const sup = eq.suplentes.length ? `<div class="suplentes"><h3><span>SUPLENTES</span><span>${eq.suplentes.length}</span></h3>
+      ${eq.suplentes.map(j => { const pos = posDeTexto(j.posicion) || 'SUP'; const c = POS_COL[pos];
+        return `<div class="sup" style="--c:${c}"><span class="num">${j.numero ?? '–'}</span><span class="n">${esc(j.nombre)}</span><span class="sup-pos">${POS_NOM[pos]}</span></div>`; }).join('')}</div>` : '';
+    return `<div class="cancha">${filas.map(f => `<div class="linea">${f.join('')}</div>`).join('')}</div><div class="leyenda-pos">${leyenda}</div>${sup}`;
   };
   const html = (k) => `<section class="tarjeta"><div class="chips" style="padding:10px 12px 0">
       <button class="chip ${k === 'local' ? 'on' : ''}" data-lado="local">${esc(p.local.nombre)}${a.local.formacion ? ' · ' + esc(a.local.formacion) : ''}</button>
       <button class="chip ${k === 'visitante' ? 'on' : ''}" data-lado="visitante">${esc(p.visitante.nombre)}${a.visitante.formacion ? ' · ' + esc(a.visitante.formacion) : ''}</button></div>
     ${pintar(a[k], k === 'local' ? p.local : p.visitante)}</section>`;
-  setTimeout(() => document.querySelectorAll('[data-lado]').forEach(b => b.onclick = () => { $('panel').innerHTML = html(b.dataset.lado); panelFormacionEventos(html); cargarFotos($('panel')); }), 0);
+  setTimeout(() => panelFormacionEventos(html), 0);
   return html('local');
 }
-function panelFormacionEventos(html) { document.querySelectorAll('[data-lado]').forEach(b => b.onclick = () => { $('panel').innerHTML = html(b.dataset.lado); panelFormacionEventos(html); cargarFotos($('panel')); }); }
+function panelFormacionEventos(html) { document.querySelectorAll('[data-lado]').forEach(b => b.onclick = () => { $('panel').innerHTML = html(b.dataset.lado); panelFormacionEventos(html); }); }
 const STATS_ES = { 'Ball possession':'Posesión', 'Possession':'Posesión', 'Total shots':'Remates', 'Shots on target':'Remates al arco', 'Shots off target':'Remates afuera', 'Blocked shots':'Remates bloqueados', 'Corner kicks':'Córners', 'Corners':'Córners', 'Fouls':'Faltas', 'Offsides':'Offsides', 'Yellow cards':'Amarillas', 'Red cards':'Rojas', 'Goalkeeper saves':'Atajadas', 'Total passes':'Pases', 'Passes accurate':'Pases correctos', 'Expected goals':'Goles esperados (xG)' };
 async function cargarStats(p) {
   const el = $('stats'); if (!el) return;
@@ -3383,7 +3422,8 @@ async function vistaComparar(cod, idA) {
   if (lista.length < 2) { $('vista').innerHTML = volver('Comparar') + '<main><div class="tarjeta aviso">No hay suficientes jugadores.</div></main>'; return; }
   let a = lista.find(x => String(x.id) === String(idA)) || lista[0];
   let b = lista.find(x => x !== a);
-  const opciones = (sel) => lista.map(x => `<option value="${x.id}" ${x === sel ? 'selected' : ''}>${esc(x.nombre)} (${esc(x.equipo.nombre)})</option>`).join('');
+  let activo = 'b';
+  const COL = { a: 'var(--plata)', b: '#FF9F43' };
   const dibujar = () => {
     const filas = [['Goles','goles'], ['Asistencias','asistencias'], ['Partidos','partidos'], ['Penales','penales'], ['Goles por partido', null]].map(([n, k]) => {
       const va = k ? a[k] : (a.partidos ? a.goles / a.partidos : 0), vb = k ? b[k] : (b.partidos ? b.goles / b.partidos : 0);
@@ -3392,18 +3432,23 @@ async function vistaComparar(cod, idA) {
         <b style="${va >= vb ? '' : 'font-weight:500;color:var(--suave)'}">${f(va)}</b><span style="text-align:center;font-size:12px;color:var(--suave)">${n}</span><b style="text-align:right;${vb >= va ? '' : 'font-weight:500;color:var(--suave)'}">${f(vb)}</b></div>
         <div class="barra"><div><i style="width:${Math.round(va / t * 100)}%;background:var(--plata)"></i></div><div><i style="width:${Math.round(vb / t * 100)}%;background:#FF9F43"></i></div></div></div>`;
     }).join('');
-    $('cuerpo').innerHTML = `<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px">
-      ${[a, b].map((x, i) => `<div class="tarjeta pad" style="text-align:center;border-top:3px solid ${i ? '#FF9F43' : 'var(--plata)'};display:flex;flex-direction:column;align-items:center;gap:6px">${caraHTML(x, 'avatar grande')}<b style="font-size:14px">${esc(x.nombre)}</b><small style="color:var(--suave);display:flex;gap:6px;align-items:center">${escudo(x.equipo)}${esc(x.equipo.nombre)}</small></div>`).join('')}</div>
-      <section class="tarjeta pad">${filas}</section>`;
-    cargarFotos($('cuerpo'));
+    const slot = (k, x) => `<button class="cmp-slot ${activo === k ? 'activo' : ''}" data-slot="${k}" style="--cs:${COL[k]}"><span class="esc">${escImg(x.equipo)}</span><span style="min-width:0"><small>JUGADOR ${k === 'a' ? 1 : 2}${activo === k ? ' <i class="punto-on"></i>' : ''}</small><b>${esc(x.nombre)}</b></span></button>`;
+    $('cuerpo').innerHTML = `<div class="cmp-slots">${slot('a', a)}${slot('b', b)}</div>
+      <section class="tarjeta pad">${filas}</section>
+      <section class="tarjeta"><div class="cab"><div class="t"><b>Elegí el jugador ${activo === 'a' ? 1 : 2}</b><small>Tocá un jugador de la lista</small></div></div>
+        ${lista.map(x => { const es = x === a ? 1 : x === b ? 2 : 0;
+          return `<button class="cmp-fila ${es ? 'elegido' : ''}" data-id="${x.id}"><span class="esc">${escImg(x.equipo)}</span><span style="min-width:0"><b>${esc(x.nombre)}</b><small>${esc(x.equipo.nombre)} · ${x.goles} goles</small></span>
+            <span class="cmp-pill ${es ? 'si' : 'no'}">${es ? 'Jugador ' + es : 'Elegir'}</span></button>`; }).join('')}</section>`;
+    document.querySelectorAll('[data-slot]').forEach(el => el.onclick = () => { activo = el.dataset.slot; dibujar(); });
+    document.querySelectorAll('.cmp-fila').forEach(el => el.onclick = () => {
+      const x = lista.find(y => String(y.id) === el.dataset.id);
+      if (activo === 'a') { if (x === b) b = a; a = x; activo = 'b'; } else { if (x === a) a = b; b = x; activo = 'a'; }
+      dibujar(); window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
   };
   $('vista').innerHTML = volver('Comparar jugadores', '#/jugadores') + `<main>
     <div class="chips">${Object.keys(LIGAS).filter(c => !HL.includes(c)).map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
-    <label style="font-size:12px;color:var(--suave)">Jugador 1<select id="selA">${opciones(a)}</select></label>
-    <label style="font-size:12px;color:var(--suave)">Jugador 2<select id="selB">${opciones(b)}</select></label>
     <div id="cuerpo" style="display:flex;flex-direction:column;gap:12px"></div></main>`;
-  $('selA').onchange = (e) => { a = lista.find(x => String(x.id) === e.target.value); dibujar(); };
-  $('selB').onchange = (e) => { b = lista.find(x => String(x.id) === e.target.value); dibujar(); };
   dibujar();
 }
 
