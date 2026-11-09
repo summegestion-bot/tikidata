@@ -466,6 +466,47 @@ _emblemas_hl = {}
 _emblemas = {"hora": 0, "datos": {}}
 
 
+# Ligas donde el logo de Highlightly no es el oficial (o no viene): se busca en TheSportsDB.
+# código -> (países donde buscar, grupos de palabras: alcanza con que el nombre tenga TODAS las de un grupo)
+LOGO_TSDB = {
+    "LPF": (["Argentina"], [["primera division"], ["liga profesional"], ["superliga"]]),
+    "PNA": (["Argentina"], [["primera nacional"], ["nacional b"]]),
+    "URU": (["Uruguay"], [["primera division"], ["primera"]]),
+    "VEN": (["Venezuela"], [["primera division"], ["futve"], ["primera"]]),
+    "CDF": (["France"], [["coupe de france"]]),
+    "SAU": (["Saudi-Arabia", "Saudi Arabia"], [["pro league"], ["professional league"], ["saudi", "league"]]),
+    "UECL": (["Europe", "World"], [["conference league"]]),
+    "EURO": (["Europe", "World"], [["european championship"], ["uefa euro"]]),
+}
+_NO_LOGO = (" women", " femen", " reserve", " youth", " u19", " u20", " u21", " u23", " segunda", " b metro", " cup winners")
+
+
+def _logo_tsdb(cod):
+    from urllib.parse import quote
+    paises, grupos = LOGO_TSDB[cod]
+
+    def sirve(lg):
+        n = normalizar((lg.get("strLeague") or "") + " " + (lg.get("strLeagueAlternate") or ""))
+        if any(x in n for x in _NO_LOGO) or (lg.get("strGender") or "Male").lower() == "female":
+            return False
+        if cod in ("LPF", "URU", "VEN") and (" nacional " in n or " primera b " in n):
+            return False
+        return any(all(" " + w in n for w in g) for g in grupos)
+    for g in grupos:  # el primer grupo es el más preciso: se prueba en orden
+        for pais in paises:
+            for lg in primera_lista(tsdb(f"/search_all_leagues.php?c={quote(pais)}&s=Soccer", ttl=30 * 86400)):
+                if sirve(lg) and all(" " + w in normalizar((lg.get("strLeague") or "") + " " + (lg.get("strLeagueAlternate") or "")) for w in g):
+                    if lg.get("strBadge"):
+                        return lg["strBadge"]
+    # plan B: la lista completa de ligas y después la ficha de la elegida
+    for lg in primera_lista(tsdb("/all_leagues.php", ttl=30 * 86400)):
+        if (lg.get("strSport") or "Soccer") == "Soccer" and sirve(lg) and lg.get("idLeague"):
+            f = (primera_lista(tsdb(f"/lookupleague.php?id={lg['idLeague']}", ttl=30 * 86400)) or [{}])[0]
+            if f.get("strBadge"):
+                return f["strBadge"]
+    return ""
+
+
 def datos_emblemas():
     """Imagen (logo) de cada liga para el menú. Se arma una vez por día."""
     if time.time() - _emblemas["hora"] < 86400 and _emblemas["datos"]:
@@ -493,6 +534,14 @@ def datos_emblemas():
             for cod, url in ex.map(logo, [c for c in HL_LIGAS if c not in _hl_no_encontradas]):
                 if url:
                     res[cod] = url
+    for cod in LOGO_TSDB:
+        if cod in LIGAS or (HL_KEY and cod in HL_LIGAS and cod not in _hl_no_encontradas):
+            try:
+                url = _logo_tsdb(cod)
+            except Exception:
+                url = ""
+            if url:
+                res[cod] = url  # el oficial de TheSportsDB reemplaza al de Highlightly
     _emblemas.update(hora=time.time() if res else 0, datos=res)
     return res
 
@@ -815,6 +864,23 @@ def hl_tabla(cod):
                           "dg": gf - gc, "pts": f.get("points") or 0, "forma": ""})
         nombre = re.sub(r"^.*? - ", "", g.get("name") or "") if len(d.get("groups", [])) > 1 else ""
         grupos.append({"nombre": nombre, "filas": filas})
+    # Apertura y Clausura en la misma temporada: primero las tablas del torneo que se está jugando,
+    # después la tabla anual y al final las del torneo que ya terminó
+    if len(grupos) > 1:
+        actual = "clausura" if datetime.now(ARG).month >= 7 else "apertura"
+        if cod == "LMX":
+            actual = "apertura" if datetime.now(ARG).month >= 7 else "clausura"
+
+        def orden(g):
+            n = normalizar(g["nombre"])
+            if actual in n:
+                return 0
+            if any(x in n for x in (" anual ", " annual ", " overall ", " general ", " acumulada ", " promedios ")):
+                return 1
+            if any(x in n for x in (" apertura ", " clausura ")):
+                return 2
+            return 1
+        grupos.sort(key=orden)
     return {"liga": cod, "nombre": HL_LIGAS[cod][0], "grupos": grupos}
 
 
@@ -2709,12 +2775,12 @@ function volver(titulo, destino='#/') {
 
 /* ---------- Menú y navegación ---------- */
 // Logos de las ligas: se guardan en el celular y se actualizan una vez por día
-let EMBLEMAS = leer('tiki_emblemas', {});
+let EMBLEMAS = leer('tiki_emblemas2', {});
 function cargarEmblemas() {
-  const t = leer('tiki_emblemas_t', 0);
+  const t = leer('tiki_emblemas2_t', 0);
   if (Date.now() - t < 86400000 && Object.keys(EMBLEMAS).length) return;
   fetch('/api/emblemas').then(r => r.ok ? r.json() : null).then(d => {
-    if (d && Object.keys(d).length) { EMBLEMAS = d; guardar('tiki_emblemas', d); guardar('tiki_emblemas_t', Date.now()); armarMenu(); }
+    if (d && Object.keys(d).length) { EMBLEMAS = d; guardar('tiki_emblemas2', d); guardar('tiki_emblemas2_t', Date.now()); armarMenu(); }
   }).catch(() => {});
 }
 const puntoLiga = (c) => `<span class="logo-liga vacio"><span class="punto" style="background:${COLOR[c] || '#60A5FA'}"></span></span>`;
@@ -3151,6 +3217,51 @@ function panelMinuto(p) {
 }
 
 /* ---------- Liga: partidos por fecha, tabla y goleadores ---------- */
+/* ---------- Fechas de un torneo: en orden de calendario y arrancando en la que se juega ahora ---------- */
+const FASES_ES = [[/round of 64|1\/32/i, '32avos de final'], [/round of 32|1\/16|last[ _]32/i, '16avos de final'], [/round of 16|1\/8|last[ _]16|octavos/i, 'Octavos de final'],
+  [/quarter|cuartos/i, 'Cuartos de final'], [/semi/i, 'Semifinales'], [/3rd|third/i, 'Tercer puesto'], [/^final$|^finals?$|(^|[^-])\bfinal\b$/i, 'Final'],
+  [/league[ _]stage/i, 'Fase liga'], [/group[ _]stage/i, 'Fase de grupos'], [/play-?off/i, 'Repechaje'], [/regular[ _]season/i, 'Fase regular']];
+function nombreFase(f) {
+  const t = String(f || '').replaceAll('_', ' ').trim();
+  const g = t.match(/^(?:group|grupo|zona)\s*([a-z0-9]{1,2})\b\s*-?\s*(\d+)?/i);
+  if (g) return 'Grupo ' + g[1].toUpperCase() + (g[2] ? ' · Fecha ' + g[2] : '');
+  const num = t.match(/(?:season|fecha|round|jornada|matchday)\s*-?\s*(\d+)\s*$/i) || t.match(/-\s*(\d+)\s*$/);
+  if (num && !/of \d+/i.test(t)) return 'Fecha ' + num[1];
+  for (const [re, es] of FASES_ES) if (re.test(t)) return es;
+  return t ? t[0].toUpperCase() + t.slice(1).toLowerCase() : 'Partidos';
+}
+// Torneos cortos dentro del mismo año: nombre según la mitad del año
+const MITADES = { LPF: ['Apertura', 'Clausura'], PAR: ['Apertura', 'Clausura'], PER: ['Apertura', 'Clausura'], COL: ['Apertura', 'Finalización'], LMX: ['Clausura', 'Apertura'], BOL: ['Apertura', 'Clausura'], ECU: ['1ª etapa', '2ª etapa'] };
+function armarFechas(partidos, cod) {
+  const t = (p) => new Date(p.fecha + 'T' + (p.hora || '12:00') + ':00').getTime();
+  const lista = partidos.slice().sort((x, y) => t(x) - t(y));
+  const grupos = [];
+  for (const p of lista) {
+    const nombre = p.jornada ? 'Fecha ' + p.jornada : nombreFase(p.fase);
+    // la misma "Fecha 3" del Apertura y del Clausura son grupos distintos: se separan si están lejos en el tiempo
+    let g = null;
+    for (let k = grupos.length - 1; k >= 0 && k >= grupos.length - 6; k--) {
+      if (grupos[k].nombre === nombre && Math.abs(t(p) - grupos[k].ultimo) < 25 * 86400000) { g = grupos[k]; break; }
+    }
+    if (!g) { g = { nombre, partidos: [], primero: t(p), ultimo: t(p) }; grupos.push(g); }
+    g.partidos.push(p); g.ultimo = Math.max(g.ultimo, t(p));
+  }
+  grupos.sort((x, y) => x.primero - y.primero);
+  // si un nombre se repite en el año, se aclara de qué torneo es
+  const cuenta = {}; grupos.forEach(g => { cuenta[g.nombre] = (cuenta[g.nombre] || 0) + 1; });
+  grupos.forEach(g => {
+    if (cuenta[g.nombre] > 1) {
+      const d = new Date(g.primero), m = MITADES[cod];
+      g.nombre += ' · ' + (m ? m[d.getMonth() < 6 ? 0 : 1] : MESES[d.getMonth()] + ' ' + d.getFullYear());
+    }
+  });
+  // la que se muestra primero: la que tiene un partido en vivo, si no la del próximo partido, si no la última jugada
+  const ahora = Date.now(), valido = (p) => !['POSTPONED', 'CANCELLED', 'SUSPENDED'].includes(p.estado);
+  let actual = grupos.findIndex(g => g.partidos.some(p => p.vivo));
+  if (actual < 0) actual = grupos.findIndex(g => g.partidos.some(p => !p.terminado && valido(p) && t(p) > ahora - 3 * 3600000));
+  if (actual < 0) actual = grupos.length - 1;
+  return { grupos, actual };
+}
 async function vistaLiga(cod, pestana) {
   pestana = pestana || 'partidos';
   $('vista').innerHTML = volver(LIGAS[cod][0]) + `<div class="pestanas">${['partidos','tabla','goleadores'].map(t => `<button data-t="${t}" class="${t === pestana ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div><main id="panel"><div class="cargando">Cargando…</div></main>`;
@@ -3168,13 +3279,14 @@ async function vistaLiga(cod, pestana) {
       cargarFotos($('panel'));
     } else {
       const d = await pedir('/api/calendario?liga=' + cod);
-      const porJornada = {};
-      d.partidos.forEach(p => { const k = p.jornada || p.fase || '-'; (porJornada[k] ||= []).push(p); });
-      const claves = Object.keys(porJornada);
-      let actual = claves.find(k => porJornada[k].some(p => !p.terminado)) || claves[claves.length - 1];
+      const { grupos: bloques, actual: inicial } = armarFechas(d.partidos, cod);
+      if (!bloques.length) { $('panel').innerHTML = '<div class="tarjeta aviso">Todavía no hay partidos cargados para este torneo.</div>'; return; }
+      const porJornada = {}, claves = [], nombres = {};
+      bloques.forEach((g, k) => { porJornada[k] = g.partidos; claves.push(k); nombres[k] = g.nombre; });
+      let actual = inicial;
       const dibujar = () => {
         const i = claves.indexOf(actual);
-        const nombre = /^\d+$/.test(actual) ? 'Fecha ' + actual : String(actual).replaceAll('_',' ').toLowerCase();
+        const nombre = nombres[actual];
         $('panel').innerHTML = `<section class="tarjeta"><div class="cab">
           <button class="icono" id="jAnt" aria-label="Fecha anterior" ${i <= 0 ? 'disabled' : ''}>${svg(ICON.atras,18)}</button>
           <div class="t" style="align-items:center"><b>${esc(nombre)}</b></div>
