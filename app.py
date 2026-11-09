@@ -2774,17 +2774,6 @@ function volver(titulo, destino='#/') {
 }
 
 /* ---------- Menú y navegación ---------- */
-// Logos de las ligas: se guardan en el celular y se actualizan una vez por día
-let EMBLEMAS = leer('tiki_emblemas2', {});
-function cargarEmblemas() {
-  const t = leer('tiki_emblemas2_t', 0);
-  if (Date.now() - t < 86400000 && Object.keys(EMBLEMAS).length) return;
-  fetch('/api/emblemas').then(r => r.ok ? r.json() : null).then(d => {
-    if (d && Object.keys(d).length) { EMBLEMAS = d; guardar('tiki_emblemas2', d); guardar('tiki_emblemas2_t', Date.now()); armarMenu(); }
-  }).catch(() => {});
-}
-const puntoLiga = (c) => `<span class="logo-liga vacio"><span class="punto" style="background:${COLOR[c] || '#60A5FA'}"></span></span>`;
-function logoLiga(c) { return EMBLEMAS[c] ? `<img class="logo-liga" src="${esc(EMBLEMAS[c])}" alt="" loading="lazy" data-liga="${c}" onerror="this.replaceWith(Object.assign(document.createElement('span'), { innerHTML: puntoLiga(this.dataset.liga) }).firstChild)">` : puntoLiga(c); }
 function armarMenu() {
   const grupos = [['ARGENTINA', ['LPF','PNA','CAR']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
     ['NORTEAMÉRICA', ['MLS','LMX']], ['EUROPA', ['CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']],
@@ -2800,7 +2789,7 @@ function armarMenu() {
     <a class="item" href="#/trivia"><span style="width:20px;text-align:center">🧠</span>Trivia de fútbol</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
   grupos.forEach(([n, cods]) => {
-    h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}">${logoLiga(c)}${esc(LIGAS[c][0])}</a>`).join('');
+    h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c] || '#60A5FA'}"></span>${esc(LIGAS[c][0])}</a>`).join('');
     h += '</div>';
   });
   $('menuLigas').innerHTML = h;
@@ -3775,7 +3764,6 @@ window.addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); pedi
 window.addEventListener('appinstalled', () => { pedidoInstalar = null; activarInstalar(); });
 if ('serviceWorker' in navigator) window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js').catch(() => {}));
 armarMenu();
-cargarEmblemas();
 activarInstalar();
 revisarGoles();
 window.addEventListener('hashchange', ruta);
@@ -3916,8 +3904,6 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_proximos(q["equipo"]))
         elif url.path == "/api/estadisticas" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_estadisticas_hl(q["id"][1:]))
-        elif url.path == "/api/emblemas":
-            self.json(datos_emblemas)
         elif url.path == "/api/hl_estado":
             self.json(hl_estado)
         elif url.path == "/api/noticias":
