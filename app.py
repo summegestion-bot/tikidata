@@ -239,7 +239,7 @@ def datos_partido(id_partido):
         }
     except Exception:
         res["historial"] = None
-    return res
+    return sumar_detalle_hl(res, p)
 
 
 def datos_tabla(liga):
@@ -316,13 +316,16 @@ def datos_proximos(id_equipo):
 
 # ---------------------------------------------------------------------------
 # Highlightly: Liga Profesional, Copa Argentina, Libertadores y Sudamericana
-# Plan gratis = 100 pedidos por día. "Uso inteligente":
+# + goles, formaciones y minuto a minuto de los partidos de Europa.
+# Plan PRO = unos 7.500 pedidos por día (se puede cambiar con HL_LIMITE). "Uso inteligente":
 #   - fuera del horario de partidos no se consulta nada (se usa lo guardado)
 #   - durante los partidos se reparte lo que queda del día: 75% para la Liga Profesional
 #   - solo se consulta cuando alguien está mirando la página
 # Clave en la variable HIGHLIGHTLY_KEY. Opcional: HL_IDS="LPF=123,CAR=456,LIB=789,SUD=321"
 # ---------------------------------------------------------------------------
 HL_KEY = os.environ.get("HIGHLIGHTLY_KEY", "").strip()
+HL_LIMITE = int(os.environ.get("HL_LIMITE", "7500") or 7500)   # pedidos por día del plan
+HL_RESERVA = max(15, HL_LIMITE // 20)  # se guardan para fichas, formaciones, planteles y Europa
 HL_BASE = "https://soccer.highlightly.net"
 HL_LIGAS = {
     "LPF": ("Liga Profesional", "Argentina"),
@@ -376,7 +379,7 @@ def hl(ruta, params=None, ttl=3600):
         if _hl["restantes"] is not None and _hl["restantes"] <= 1:
             if viejo:
                 return viejo[1]
-            raise RuntimeError("Se terminaron los pedidos gratis de hoy. Mañana se actualiza solo.")
+            raise RuntimeError("Se terminaron los pedidos de hoy. Mañana se actualiza solo.")
         try:
             r = requests.get(HL_BASE + ruta, params=params, headers={"x-rapidapi-key": HL_KEY}, timeout=15)
         except Exception as e:
@@ -504,8 +507,8 @@ def en_ventana(p, ahora=None):
 
 
 # Prioridades: cuánto más seguido se actualiza cada uno, comparado con Boca (1 = el más rápido)
-PRIORIDAD = {"boca": 1.0, "river": 1.5, "LPF": 3.0, "otros": 4.0}
-MINIMO = {"boca": 1, "river": 2, "LPF": 3, "otros": 4}       # minutos mínimos entre consultas
+PRIORIDAD = {"boca": 1.0, "river": 1.0, "LPF": 2.0, "otros": 2.0}
+MINIMO = {"boca": 1, "river": 1, "LPF": 2, "otros": 2}       # minutos mínimos entre consultas (plan PRO)
 EQUIPOS_PRIORIDAD = {"boca": " boca juniors ", "river": " river plate "}
 
 
@@ -578,8 +581,9 @@ def _minutos_en_vivo_restantes():
 
 def intervalos():
     """Reparte los pedidos que quedan en el día: Boca primero, después River, la liga y las copas."""
-    restantes = _hl["restantes"] if _hl["restantes"] is not None else 100 - _hl["usados"]
-    disponibles = max(0, restantes - 15)  # 15 quedan de reserva para fichas de partidos
+    restantes = _hl["restantes"] if _hl["restantes"] is not None else HL_LIMITE - _hl["usados"]
+    reserva = max(15, (_hl["limite"] or HL_LIMITE) // 20)
+    disponibles = max(0, restantes - reserva)  # una parte queda de reserva para fichas, Europa y planteles
     if disponibles <= 0:
         return {k: 60 for k in PRIORIDAD}
     minutos = _minutos_en_vivo_restantes()
@@ -752,8 +756,136 @@ def datos_estadisticas_hl(id_num):
     return {"estadisticas": [{"nombre": n, "local": v[0], "visitante": v[1]} for n, v in filas.items()]}
 
 
+# --- Europa (y el resto de football-data): goles, formaciones y minuto a minuto desde Highlightly ---
+_SOBRAN = {"fc", "cf", "afc", "sc", "ac", "club", "de", "the", "calcio", "ssc", "as", "rc", "cd", "ud", "sd", "fk",
+           "sv", "bv", "vfb", "vfl", "tsg", "fsv", "1", "1899", "1846", "1848", "1910", "1909", "04", "05", "e", "and", "&"}
+_ALIAS = {"utd": "united", "man": "manchester", "atl": "atletico", "internazionale": "inter", "munchen": "munich",
+          "monchengladbach": "gladbach", "st": "saint", "psg": "paris"}
+
+
+def _fichas(nombre):
+    return {_ALIAS.get(w, w) for w in normalizar(nombre).split() if w not in _SOBRAN}
+
+
+def _parecido(nombres_a, nombre_b):
+    """0 a 1: cuánto se parecen dos nombres de equipo (por palabras, aceptando abreviaturas)."""
+    b = _fichas(nombre_b)
+    mejor = 0
+    for n in nombres_a:
+        a = _fichas(n)
+        if not a or not b:
+            continue
+        chico, grande = (a, b) if len(a) <= len(b) else (b, a)
+        ok = sum(1 for w in chico if any(w == x or (len(w) >= 3 and len(x) >= 3 and (x.startswith(w) or w.startswith(x))) for x in grande))
+        mejor = max(mejor, ok / len(chico))
+    return mejor
+
+
+def hl_partidos_del_dia(fecha):
+    """Todos los partidos del día en Highlightly (se guardan 6 horas: solo sirven para encontrar el número)."""
+    lista, offset = [], 0
+    for _ in range(25):
+        d = hl("/matches", {"date": fecha, "timezone": "America/Argentina/Buenos_Aires", "limit": 100, "offset": offset}, ttl=6 * 3600)
+        pagina = _lista(d)
+        lista += pagina
+        total = ((d or {}).get("pagination") or {}).get("totalCount") if isinstance(d, dict) else None
+        offset += 100
+        if len(pagina) < 100 or (total is not None and offset >= total):
+            break
+    return lista
+
+
+_mapa_hl = {}
+
+
+def buscar_en_hl(fd):
+    """Busca en Highlightly el mismo partido que viene de football-data. Devuelve (id, invertido) o None."""
+    if not HL_KEY:
+        return None
+    if fd.get("id") in _mapa_hl:
+        return _mapa_hl[fd["id"]]
+    fecha = a_hora_arg(fd["utcDate"]).strftime("%Y-%m-%d")
+    loc = [(fd.get("homeTeam") or {}).get(k) or "" for k in ("name", "shortName")]
+    vis = [(fd.get("awayTeam") or {}).get(k) or "" for k in ("name", "shortName")]
+    mejor, puntaje = None, 0
+    for m in hl_partidos_del_dia(fecha):
+        h, a = (m.get("homeTeam") or {}).get("name") or "", (m.get("awayTeam") or {}).get("name") or ""
+        for inv, (x, y) in ((False, (h, a)), (True, (a, h))):
+            pl, pv = _parecido(loc, x), _parecido(vis, y)
+            if pl >= .5 and pv >= .5 and pl + pv >= 1.5 and pl + pv > puntaje:
+                mejor, puntaje = (m.get("id"), inv), pl + pv
+    if mejor:
+        _mapa_hl[fd["id"]] = mejor
+    return mejor
+
+
+def sumar_detalle_hl(res, fd):
+    """Le agrega a un partido de football-data los goles con nombre, formaciones, minuto a minuto y estadísticas."""
+    try:
+        enc = buscar_en_hl(fd)
+        if not enc:
+            return res
+        hid, inv = enc
+        h = datos_partido_hl(str(hid))
+    except Exception:
+        return res
+    mapa = {h["local"]["id"]: res["visitante"]["id"] if inv else res["local"]["id"],
+            h["visitante"]["id"]: res["local"]["id"] if inv else res["visitante"]["id"]}
+    for e in h.get("eventos", []):
+        e["equipo"] = mapa.get(e["equipo"], e["equipo"])
+    for g in h.get("goles", []):
+        g["equipo"] = mapa.get(g["equipo"], g["equipo"])
+    res["eventos"], res["goles"] = h.get("eventos", []), h.get("goles", []) or res["goles"]
+    al = h.get("alineacion")
+    if al and inv:
+        al = {"local": al["visitante"], "visitante": al["local"]}
+    res["alineacion"] = al
+    res["fuente"], res["hlId"] = "hl", f"h{hid}"
+    if h.get("vivo") and h.get("gl") is not None:  # en vivo, Highlightly suele ir más rápido
+        gl, gv = (h["gv"], h["gl"]) if inv else (h["gl"], h["gv"])
+        res.update(gl=gl, gv=gv, minuto=h.get("minuto") or res.get("minuto"), vivo=True)
+    if not res.get("estadio"):
+        res["estadio"] = h.get("estadio") or ""
+    return res
+
+
+# --- Planteles armados con las formaciones de los últimos partidos (datos reales y actuales) ---
+def plantel_hl(id_txt, partidos=5):
+    jugados = []
+    for c in HL_LIGAS:
+        try:
+            jugados += [p for p in hl_temporada(c) if p["terminado"] and id_txt in (p["local"]["id"], p["visitante"]["id"])]
+        except Exception:
+            continue
+    jugados.sort(key=lambda p: -p["_inicio"])
+    vistos, plantel = {}, []
+    for p in jugados[:partidos]:
+        try:
+            al = hl(f"/lineups/{p['id'][1:]}", ttl=7 * 86400)
+        except Exception:
+            continue
+        al = al[0] if isinstance(al, list) and al else al
+        if not isinstance(al, dict):
+            continue
+        lado = al.get("homeTeam") if p["local"]["id"] == id_txt else al.get("awayTeam")
+        lado = lado or {}
+        filas = [f if isinstance(f, list) else [f] for f in (lado.get("initialLineup") or [])]
+        for i, fila in enumerate(filas):
+            pos = "Goalkeeper" if i == 0 else "Defender" if i == 1 else "Offence" if i == len(filas) - 1 else "Midfield"
+            for j in fila:
+                if isinstance(j, dict) and j.get("name"):
+                    vistos.setdefault(j["name"], (j.get("position") or pos, j.get("number")))
+        for j in lado.get("substitutes") or []:
+            if isinstance(j, dict) and j.get("name"):
+                vistos.setdefault(j["name"], (j.get("position") or "", j.get("number")))
+    for n, (pos, num) in vistos.items():
+        plantel.append({"id": None, "nombre": n, "posicion": pos, "nacimiento": "",
+                        "nacionalidad": f"Camiseta {num}" if num else "", "foto": ""})
+    return plantel
+
+
 def hl_estado():
-    return {"clave": bool(HL_KEY), "usadosHoy": _hl["usados"], "restantes": _hl["restantes"], "limite": _hl["limite"],
+    return {"clave": bool(HL_KEY), "limiteDelPlan": HL_LIMITE, "reserva": HL_RESERVA, "usadosHoy": _hl["usados"], "restantes": _hl["restantes"], "limite": _hl["limite"],
             "ultimoError": _hl["error"],
             "intervalosMinutos": intervalos(), "minutosDePartidoQueFaltanHoy": {k: round(v) for k, v in _minutos_en_vivo_restantes().items()},
             "equiposPrioridad": ids_prioridad(),
@@ -1589,6 +1721,62 @@ def camisetas_pixel(nombres, argentino=False, colores_fd="", colores_wiki=None):
     return [_kit(("liso", c1, c2, {}), "Titular"), _kit(("liso", c2, c1, {}), "Suplente")]
 
 
+
+# ---------------------------------------------------------------------------
+# Estudio: partidos terminados (o en juego) de hoy y ayer, para armar videos de Instagram
+# nivel 2 = MEGA (Superclásico, finales) · 1 = importante (Boca, River, copas, playoffs, Selección) · 0 = normal
+# ---------------------------------------------------------------------------
+NO_ES_FINAL = ["semi", "quarter", "cuartos", "octavos", "round of", "1/", "16", "32", "group", "grupo", "repechaje", "play-off round"]
+
+
+def _es_final(p):
+    f = normalizar(p.get("fase") or "")
+    return " final " in f and not any(x in f for x in NO_ES_FINAL)
+
+
+def nivel_partido(p):
+    nl, nv = normalizar(p["local"]["nombre"]), normalizar(p["visitante"]["nombre"])
+    argentino = p["liga"] in ("LPF", "CAR", "LIB", "SUD")
+    boca = argentino and (" boca juniors " in nl or " boca juniors " in nv)
+    river = argentino and (" river plate " in nl or " river plate " in nv)
+    if (boca and river) or _es_final(p):
+        return 2, ("Superclásico" if boca and river else "Final")
+    if boca or river:
+        return 1, "Boca" if boca else "River"
+    if p["liga"] in ("LIB", "SUD") and p.get("fase"):
+        return 1, "Copa"
+    if p["liga"] in ("LPF", "CAR") and p.get("fase"):
+        return 1, "Playoffs" if p["liga"] == "LPF" else "Copa Argentina"
+    if p["liga"] == "WC" and (" argentina " in nl or " argentina " in nv):
+        return 1, "Selección"
+    return 0, ""
+
+
+def kit_de(equipo, argentino):
+    k = camisetas_pixel([equipo["nombre"]], argentino)
+    return k[0]["pix"] if k else {"p": "liso", "c1": "#2F6BDB", "c2": "#FFFFFF", "c3": "", "m": "", "k": "", "ancho": False}
+
+
+def datos_estudio():
+    hoy = datetime.now(ARG).date()
+    lista = []
+    for dia, nombre in ((hoy, "hoy"), (hoy - timedelta(days=1), "ayer")):
+        try:
+            d = datos_hoy(dia.isoformat())
+        except Exception:
+            continue
+        for g in d.get("grupos", []):
+            for p in g["partidos"]:
+                if not (p.get("terminado") or p.get("vivo")):
+                    continue
+                nivel, motivo = nivel_partido(p)
+                argentino = p["liga"] in ("LPF", "CAR")
+                lista.append(dict(p, dia=nombre, nivel=nivel, motivo=motivo,
+                                  kitL=kit_de(p["local"], argentino), kitV=kit_de(p["visitante"], argentino)))
+    lista.sort(key=lambda p: (-p["nivel"], p["dia"] != "hoy", p["fecha"] + p["hora"]), reverse=False)
+    return {"partidos": lista}
+
+
 def es_argentino(id_txt):
     if not id_txt.startswith("h"):
         return False
@@ -1707,6 +1895,13 @@ def datos_club_extra(id_equipo):
         if not res["capacidad"]:
             res["capacidad"] = extra.get("intStadiumCapacity") or venue.get("intCapacity")
     res["camisetas"] = camisetas_pixel(nombres, argentino, t.get("clubColors") or "")
+    if id_txt.startswith("h") and HL_KEY:
+        try:
+            res["plantel"] = plantel_hl(id_txt)
+            if res["plantel"]:
+                res["plantelNota"] = "Jugadores de los últimos partidos"
+        except Exception:
+            pass
     return res
 
 
@@ -2210,6 +2405,20 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .aviso-gol small { display:block; font-size:11px; color:#AEB9CC; font-weight:600; }
 .aviso-gol b { display:block; font-size:15px; font-weight:900; margin-top:2px; }
 .aviso-gol span span, .aviso-gol > span > span { display:block; font-size:12.5px; color:#DCE3EE; }
+.est-p { overflow:hidden; } .est-p.mega { border-color:#F5C400; box-shadow:0 0 0 1px #F5C400 inset; }
+.est-cab { display:flex; flex-direction:column; gap:8px; width:100%; padding:12px; border:0; background:none; text-align:left; color:var(--texto); }
+.est-cab small { font-size:12px; color:var(--suave); font-weight:700; }
+.est-res { display:grid; grid-template-columns:34px 1fr auto 1fr 34px; align-items:center; gap:8px; font-size:14px; }
+.est-res b:nth-of-type(1) { text-align:right; } .est-res strong { font-family:Montserrat, sans-serif; font-size:20px; font-weight:900; padding:2px 10px; background:var(--sup); border-radius:8px; }
+.est-k svg { width:34px; height:34px; display:block; }
+.ins { font-size:11px; font-weight:900; padding:4px 8px; border-radius:999px; white-space:nowrap; } .ins.mega { background:#F5C400; color:#05070D; } .ins.imp { background:#2F6BDB; color:#fff; }
+.est-ed { display:flex; flex-direction:column; gap:10px; padding:0 12px 14px; border-top:1px solid var(--linea); padding-top:12px; }
+.est-ed small { font-size:12px; color:var(--suave); line-height:1.5; }
+.est-ed label { display:flex; flex-direction:column; gap:4px; font-size:12px; font-weight:800; color:var(--suave); }
+.est-ed input, .est-ed textarea { font:inherit; font-size:15px; font-weight:700; color:var(--texto); background:var(--sup); border:1.5px solid var(--borde); border-radius:10px; padding:10px; resize:none; }
+.est-grab { position:fixed; inset:0; z-index:80; background:rgba(5,7,13,.92); display:flex; align-items:center; justify-content:center; padding:16px; }
+.est-grab-in { width:min(420px, 100%); background:var(--tarj); border:1px solid var(--borde); border-radius:18px; padding:16px; display:flex; flex-direction:column; gap:10px; text-align:center; }
+.est-prev canvas { width:180px; height:320px; border-radius:12px; display:block; margin:0 auto; }
 .camisetas svg.kit-pix { width:96px; height:96px; max-width:100%; display:block; margin:0 auto; }
 .kit > div img { width:100%; height:100%; object-fit:fill; display:block; }
 .kit.pix > div img { image-rendering:pixelated; }
@@ -2355,6 +2564,7 @@ function armarMenu() {
     <a class="item" href="#/favoritos"><span style="width:20px;text-align:center">🔔</span>Avisos de gol en vivo</a>
     <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
     <a class="item" href="#/trivia"><span style="width:20px;text-align:center">🧠</span>Trivia de fútbol</a>
+    <a class="item" href="#/estudio"><span style="width:20px;text-align:center">🎬</span>Estudio de videos</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
   grupos.forEach(([n, cods]) => {
     h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c]}"></span>${esc(LIGAS[c][0])}</a>`).join('');
@@ -2655,6 +2865,284 @@ function finTrivia() {
   $('otraVez').onclick = () => empezarTrivia(t.cat, t.nivel);
 }
 
+/* ---------- Estudio: videos de Instagram de los partidos, generados en el navegador ---------- */
+const EST = { lista: [], abierto: null, goles: {}, logo: null, kits: {} };
+async function vistaEstudio() {
+  $('vista').innerHTML = volver('Estudio de videos') + `<main id="estudio">
+    <p class="nota-pie" style="margin:0">Partidos terminados de hoy y de ayer. Elegí uno, revisá los textos y tocá <b>Crear video</b>: en unos 35 segundos se descarga listo para Instagram, con su portada.</p>
+    <div class="cargando">Buscando partidos…</div></main>`;
+  let d; try { d = await pedir('/api/estudio'); } catch (e) { $('estudio').innerHTML = error(e); return; }
+  EST.lista = d.partidos;
+  if (!EST.lista.length) { $('estudio').innerHTML = '<div class="tarjeta aviso">Todavía no terminó ningún partido hoy ni ayer.</div>'; return; }
+  dibujarEstudio();
+}
+function dibujarEstudio() {
+  const insignia = (p) => p.nivel === 2 ? `<span class="ins mega">🔥 MEGA · ${esc(p.motivo)}</span>` : p.nivel === 1 ? `<span class="ins imp">⭐ ${esc(p.motivo)}</span>` : '';
+  $('estudio').innerHTML = `<p class="nota-pie" style="margin:0">Partidos terminados de hoy y de ayer. Elegí uno, revisá los textos y tocá <b>Crear video</b>: en unos 35 segundos se descarga listo para Instagram, con su portada.</p>
+    ${EST.lista.map((p, i) => `<section class="tarjeta est-p ${p.nivel === 2 ? 'mega' : ''}">
+      <button class="est-cab" data-est="${i}">
+        <span style="display:flex;justify-content:space-between;align-items:center;gap:8px"><small>${p.dia === 'hoy' ? 'Hoy' : 'Ayer'} · ${esc(p.ligaNombre)}</small>${insignia(p)}</span>
+        <span class="est-res"><span class="est-k">${camisetaPixel(p.kitL)}</span><b>${esc(p.local.nombre)}</b><strong>${p.gl ?? 0} - ${p.gv ?? 0}</strong><b>${esc(p.visitante.nombre)}</b><span class="est-k">${camisetaPixel(p.kitV)}</span></span>
+        <small>${p.vivo ? '🔴 En juego: esperá al final para el video' : 'Final'}</small></button>
+      <div id="estEd${i}"></div></section>`).join('')}`;
+  document.querySelectorAll('[data-est]').forEach(b => b.onclick = () => abrirEditor(+b.dataset.est));
+}
+function minNum(m) { const x = String(m || '').match(/(\d+)(?:\s*\+\s*(\d+))?/); return x ? +x[1] + (x[2] ? +x[2] / 100 : 0) : 0; }
+function sugerir(p, goles) {
+  const gl = p.gl ?? 0, gv = p.gv ?? 0, dif = Math.abs(gl - gv);
+  const gana = gl > gv ? p.local.nombre : p.visitante.nombre;
+  const ultimo = goles.length ? goles[goles.length - 1] : null;
+  let tag, titulo;
+  if (gl === gv) { tag = '🤝 EMPATE'; titulo = gl === 0 ? 'SIN GOLES\nEN LA CANCHA' : 'REPARTIERON\nPUNTOS'; }
+  else if (dif >= 3) { tag = '💥 GOLEADA'; titulo = `${gana.toUpperCase()}\nGOLEÓ`; }
+  else if (ultimo && minNum(ultimo.minuto) >= 85 && dif === 1) { tag = '🔥 AGÓNICO'; titulo = 'LO GANÓ\nSOBRE EL FINAL'; }
+  else { tag = '✅ TRIUNFO'; titulo = `GANÓ\n${gana.toUpperCase()}`; }
+  if (p.nivel === 2) tag = p.motivo === 'Superclásico' ? '🔥 SUPERCLÁSICO' : '🏆 FINAL';
+  const autores = [...new Set(goles.map(g => (g.jugador || '').split(' ').slice(-1)[0]).filter(Boolean))];
+  const sub = autores.length ? 'Goles de ' + (autores.length > 1 ? autores.slice(0, -1).join(', ') + ' y ' + autores.slice(-1) : autores[0]) : `${p.local.nombre} ${gl} - ${gv} ${p.visitante.nombre}`;
+  return { tag, titulo, sub };
+}
+async function abrirEditor(i) {
+  const p = EST.lista[i], el = $('estEd' + i);
+  if (EST.abierto === i) { el.innerHTML = ''; EST.abierto = null; return; }
+  if (EST.abierto !== null) { const prev = $('estEd' + EST.abierto); if (prev) prev.innerHTML = ''; }
+  EST.abierto = i;
+  if (p.vivo) { el.innerHTML = '<div class="aviso" style="padding:12px">El partido todavía se está jugando. Volvé cuando termine.</div>'; return; }
+  el.innerHTML = '<div class="cargando">Buscando los goles…</div>';
+  let det = null; try { det = await pedir('/api/partido?id=' + p.id); } catch (e) {}
+  const goles = ((det && det.goles) || []).slice().sort((a, b) => minNum(a.minuto) - minNum(b.minuto));
+  EST.goles[p.id] = { goles, estadio: (det && det.estadio) || '' };
+  const s = sugerir(p, goles);
+  el.innerHTML = `<div class="est-ed">
+    ${goles.length ? `<small>⚽ ${goles.map(g => `${esc(g.jugador)} ${esc(String(g.minuto))}'`).join(' · ')}</small>` : `<small>Para esta liga no tenemos quién hizo los goles: el video muestra el resultado final.</small>`}
+    <label>Cartel<input id="eTag" value="${esc(s.tag)}" maxlength="28"></label>
+    <label>Título (2 renglones; el segundo va en azul)<textarea id="eTit" rows="2" maxlength="40">${esc(s.titulo)}</textarea></label>
+    <label>Texto de abajo<input id="eSub" value="${esc(s.sub)}" maxlength="60"></label>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="boton" id="eVideo" style="flex:1">🎬 Crear video</button><button class="boton sec" id="ePortada">🖼️ Portada</button></div>
+    <p class="nota-pie" style="margin:0">Mientras se graba no cambies de pestaña ni bloquees el celular.</p></div>`;
+  const textos = () => ({ tag: $('eTag').value.trim(), titulo: $('eTit').value.trim(), sub: $('eSub').value.trim() });
+  $('eVideo').onclick = () => crearVideo(p, textos());
+  $('ePortada').onclick = () => crearPortada(p, textos());
+}
+
+/* ----- dibujo en canvas ----- */
+const VW = 1080, VH = 1920;
+const F_TIT = 'Montserrat, "Inter Display", Inter, sans-serif', F_TXT = 'Inter, sans-serif';
+async function prepararRecursos(p) {
+  try { await Promise.all(['900 80px Montserrat', '800 40px Montserrat', '700 40px Inter', '600 40px Inter'].map(f => document.fonts.load(f))); } catch (e) {}
+  if (!EST.logo) EST.logo = await logoSinFondo();
+  const cargar = (kit) => new Promise(ok => {
+    const clave = JSON.stringify(kit); if (EST.kits[clave]) return ok(EST.kits[clave]);
+    const img = new Image(); img.onload = () => { EST.kits[clave] = img; ok(img); }; img.onerror = () => ok(null);
+    img.src = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(camisetaPixel(kit).replace('<svg ', '<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" '));
+  });
+  return { kL: await cargar(p.kitL), kV: await cargar(p.kitV) };
+}
+function logoSinFondo() {  // el escudo tiene un fondo oscuro cuadrado: se lo saca para que no se vea el cuadrado
+  return new Promise(ok => {
+    const img = new Image(); img.onload = () => {
+      const c = document.createElement('canvas'); c.width = img.width; c.height = img.height;
+      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+      try {
+        const d = x.getImageData(0, 0, c.width, c.height), px = d.data, W = c.width, H = c.height, visto = new Uint8Array(W * H);
+        const pila = [0, W - 1, (H - 1) * W, H * W - 1];
+        while (pila.length) {
+          const i = pila.pop(); if (i < 0 || i >= W * H || visto[i]) continue; visto[i] = 1;
+          const r = px[i * 4], g = px[i * 4 + 1], b = px[i * 4 + 2];
+          if (r > 32 || g > 36 || b > 44) continue;
+          px[i * 4 + 3] = 0; const xx = i % W;
+          if (xx > 0) pila.push(i - 1); if (xx < W - 1) pila.push(i + 1); pila.push(i - W, i + W);
+        }
+        x.putImageData(d, 0, 0);
+      } catch (e) {}
+      ok(c);
+    };
+    img.onerror = () => ok(null); img.src = '/logo.png';
+  });
+}
+function rr(c, x, y, w, h, r) { c.beginPath(); c.moveTo(x + r, y); c.arcTo(x + w, y, x + w, y + h, r); c.arcTo(x + w, y + h, x, y + h, r); c.arcTo(x, y + h, x, y, r); c.arcTo(x, y, x + w, y, r); c.closePath(); }
+function texto(c, s, x, y, tam, peso, color, alin = 'center', maxW = 980, fam = F_TIT) {
+  let t = tam; c.font = `${peso} ${t}px ${fam}`;
+  while (c.measureText(s).width > maxW && t > 18) { t -= 2; c.font = `${peso} ${t}px ${fam}`; }
+  c.fillStyle = color; c.textAlign = alin; c.textBaseline = 'middle'; c.fillText(s, x, y);
+}
+const cl01 = (x) => Math.max(0, Math.min(1, x));
+const eOut = (x) => 1 - Math.pow(1 - cl01(x), 3);
+const eBack = (x) => { x = cl01(x); const k = 1.7; return 1 + (k + 1) * Math.pow(x - 1, 3) + k * Math.pow(x - 1, 2); };
+function fondo(c, t, acento) {
+  c.fillStyle = '#070B14'; c.fillRect(0, 0, VW, VH);
+  c.strokeStyle = 'rgba(79,143,247,.08)'; c.lineWidth = 2; const off = (t * 30) % 90;
+  c.beginPath(); for (let x = 0; x <= VW; x += 90) { c.moveTo(x, 0); c.lineTo(x, VH); } for (let y = -90 + off; y <= VH; y += 90) { c.moveTo(0, y); c.lineTo(VW, y); } c.stroke();
+  c.fillStyle = acento; c.fillRect(0, 0, VW, 14); c.fillRect(0, VH - 14, VW, 14);
+}
+function logo(c, cx, cy, tam, brillo = true) {
+  if (!EST.logo) return;
+  c.save(); if (brillo) { c.shadowColor = 'rgba(79,143,247,.55)'; c.shadowBlur = tam * 0.12; }
+  c.drawImage(EST.logo, cx - tam / 2, cy - tam / 2, tam, tam); c.restore();
+}
+function marca(c, y) { logo(c, VW / 2, y + 115, 230); c.font = `900 58px ${F_TIT}`; c.textBaseline = 'middle'; const w1 = c.measureText('TIKI').width, w2 = c.measureText('DATA').width;
+  c.textAlign = 'left'; c.fillStyle = '#EEF2F7'; c.fillText('TIKI', VW / 2 - (w1 + w2) / 2, y + 270); c.fillStyle = '#4F8FF7'; c.fillText('DATA', VW / 2 - (w1 + w2) / 2 + w1, y + 270); }
+function kitCaja(c, img, cx, cy, tam) {
+  rr(c, cx - tam / 2 - 22, cy - tam / 2 - 22, tam + 44, tam + 44, 40); c.fillStyle = '#16294A'; c.fill(); c.lineWidth = 3; c.strokeStyle = '#263A5C'; c.stroke();
+  if (img) { c.imageSmoothingEnabled = false; c.drawImage(img, cx - tam / 2, cy - tam / 2, tam, tam); c.imageSmoothingEnabled = true; }
+}
+function pill(c, s, cx, cy, color, esc_ = 1) {
+  c.save(); c.translate(cx, cy); c.scale(esc_, esc_);
+  c.font = `900 44px ${F_TIT}`; const w = c.measureText(s).width + 80;
+  rr(c, -w / 2, -42, w, 84, 42); c.fillStyle = color; c.fill(); texto(c, s, 0, 2, 44, 900, '#fff'); c.restore();
+}
+function tituloLineas(c, s, cy, tam, ac) {
+  const ls = s.split('\n').filter(Boolean).slice(0, 3);
+  ls.forEach((l, i) => texto(c, l, VW / 2, cy + (i - (ls.length - 1) / 2) * tam * 1.0, tam, 900, i === ls.length - 1 && ls.length > 1 ? ac : '#EEF2F7'));
+}
+function colorMin(kit) { const c1 = (kit.c1 || '').toUpperCase(); return ['#FFFFFF', '#FFF', 'WHITE', '#EFE3C2'].includes(c1) ? '#2A2F3A' : kit.c1; }
+function guion(p, info, tx) {
+  const mega = p.nivel === 2, ac = mega ? '#F5C400' : '#4F8FF7';
+  const goles = info.goles;
+  // secuencia de goles: si no tenemos quién los hizo, solo el resultado final
+  let pasos = [], l = 0, v = 0;
+  goles.forEach(g => { if (g.equipo === p.local.id) l++; else v++; pasos.push({ l, v, g }); });
+  if (!goles.length || l !== (p.gl ?? 0) || v !== (p.gv ?? 0)) pasos = [{ l: p.gl ?? 0, v: p.gv ?? 0, g: null }];
+  const porGol = pasos.length > 4 ? 1.7 : 2.4;
+  const D = { tapa: 1.5, intro: 3, res: 1.6 + pasos.length * porGol + 1.4, lista: goles.length && pasos[0].g ? 5 : 0, dato: 4.2, fin: 4.5 };
+  const S = {}; let t0 = 0; for (const k of ['tapa', 'intro', 'res', 'lista', 'dato', 'fin']) { S[k] = [t0, t0 + D[k]]; t0 += D[k]; }
+  return { mega, ac, pasos, porGol, S, total: t0, goles: pasos[0].g ? goles : [] };
+}
+function dibujarPortada(c, p, k, tx, ac) {
+  fondo(c, 0, ac);
+  const g = c.createRadialGradient(VW / 2, 760, 50, VW / 2, 760, 620); g.addColorStop(0, ac === '#F5C400' ? 'rgba(245,196,0,.22)' : 'rgba(47,107,219,.30)'); g.addColorStop(1, 'rgba(0,0,0,0)'); c.fillStyle = g; c.fillRect(0, 0, VW, VH);
+  logo(c, VW / 2 - 110, 165, 150); texto(c, 'TIKI', VW / 2 + 20, 168, 62, 900, '#EEF2F7', 'left'); c.font = `900 62px ${F_TIT}`; texto(c, 'DATA', VW / 2 + 20 + c.measureText('TIKI').width, 168, 62, 900, '#4F8FF7', 'left');
+  texto(c, `${(p.ligaNombre || '').toUpperCase()}${p.jornada ? ' · FECHA ' + p.jornada : p.fase ? ' · ' + String(p.fase).toUpperCase() : ''}`, VW / 2, 330, 36, 800, '#8FB8FA', 'center', 980, F_TXT);
+  kitCaja(c, k.kL, 300, 560, 290); kitCaja(c, k.kV, 780, 560, 290);
+  texto(c, p.local.nombre, 300, 790, 56, 900, '#EEF2F7', 'center', 440); texto(c, p.visitante.nombre, 780, 790, 56, 900, '#EEF2F7', 'center', 440);
+  texto(c, `${p.gl ?? 0}`, VW / 2 - 190, 1010, 280, 900, '#EEF2F7'); texto(c, '-', VW / 2, 1010, 280, 900, ac); texto(c, `${p.gv ?? 0}`, VW / 2 + 190, 1010, 280, 900, '#EEF2F7');
+  pill(c, tx.tag || '⚽ FINAL', VW / 2, 1230, '#E5332A');
+  tituloLineas(c, tx.titulo || '', 1410, 100, ac);
+  texto(c, tx.sub || '', VW / 2, 1600, 40, 600, '#C9CFD8', 'center', 960, F_TXT);
+}
+function dibujarCuadro(c, t, p, k, tx, G, info) {
+  const { S, ac, pasos, porGol, mega } = G;
+  if (t < S.tapa[1]) { dibujarPortada(c, p, k, tx, ac); return; }
+  fondo(c, t, ac);
+  const op = (a, b) => Math.min(cl01((t - a) / .35), cl01((b - t) / .35));
+  const capa = (key, fn) => { const [a, b] = S[key]; if (t < a || t > b) return; c.save(); c.globalAlpha = key === 'fin' ? cl01((t - a) / .35) : op(a, b); fn(t - a); c.restore(); };
+  capa('intro', u => {
+    c.save(); c.translate(VW / 2, 720); const e = 0.6 + 0.4 * eBack(u / .8); c.scale(e, e); c.rotate((1 - eOut(u / .8)) * -0.2); logo(c, 0, 0, 520); c.restore();
+    texto(c, `${(p.ligaNombre || '').toUpperCase()}${p.jornada ? ' · FECHA ' + p.jornada : ''}`, VW / 2, 1050, 34, 800, '#8FB8FA', 'center', 980, F_TXT);
+    tituloLineas(c, mega ? (p.motivo === 'Superclásico' ? 'EL\nSUPERCLÁSICO' : 'LA GRAN\nFINAL') : (p.dia === 'hoy' ? 'EL PARTIDO\nDE HOY' : 'EL PARTIDO\nDE AYER'), 1230, 120, ac);
+  });
+  capa('res', u => {
+    marca(c, 40);
+    texto(c, (p.ligaNombre || '').toUpperCase(), VW / 2, 680, 36, 800, '#8FB8FA', 'center', 980, F_TXT);
+    const ent = eOut(u / .6);
+    c.save(); c.translate((1 - ent) * -500, 0); kitCaja(c, k.kL, 300, 880, 260); texto(c, p.local.nombre, 300, 1090, 54, 900, '#EEF2F7', 'center', 430); c.restore();
+    c.save(); c.translate((1 - ent) * 500, 0); kitCaja(c, k.kV, 780, 880, 260); texto(c, p.visitante.nombre, 780, 1090, 54, 900, '#EEF2F7', 'center', 430); c.restore();
+    let act = null, idx = -1; pasos.forEach((ps, i) => { if (u >= 1.6 + i * porGol) { act = ps; idx = i; } });
+    const tg = idx >= 0 ? 1.6 + idx * porGol : 0, pop = idx >= 0 ? 1 + .25 * Math.max(0, 1 - Math.abs(u - tg) * 5) : 1;
+    const L = act ? act.l : 0, V = act ? act.v : 0;
+    const subeL = act && (idx === 0 ? act.l > 0 : act.l > pasos[idx - 1].l), subeV = act && (idx === 0 ? act.v > 0 : act.v > pasos[idx - 1].v);
+    c.save(); c.translate(VW / 2 - 200, 1330); c.scale(subeL ? pop : 1, subeL ? pop : 1); texto(c, String(L), 0, 0, 260, 900, '#EEF2F7'); c.restore();
+    texto(c, '-', VW / 2, 1330, 260, 900, ac);
+    c.save(); c.translate(VW / 2 + 200, 1330); c.scale(subeV ? pop : 1, subeV ? pop : 1); texto(c, String(V), 0, 0, 260, 900, '#EEF2F7'); c.restore();
+    if (info.estadio) texto(c, info.estadio, VW / 2, 1500, 38, 600, '#8E9AAE', 'center', 960, F_TXT);
+    if (act) {  // notificación de Tiki Data
+      const d = u - tg, entra = eOut(d / .35), sale = eOut((d - (porGol - .55)) / .3);
+      const eq = act.g ? (act.g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre) : '';
+      const t1 = act.g ? `⚽ ¡GOL de ${eq}!` : '🏁 ¡Final del partido!';
+      const t2 = act.g ? `${act.g.jugador} ${act.g.minuto}'  ·  ${p.local.nombre} ${act.l} - ${act.v} ${p.visitante.nombre}` : `${p.local.nombre} ${act.l} - ${act.v} ${p.visitante.nombre}`;
+      c.save(); c.globalAlpha *= cl01(entra - sale); c.translate((1 - entra) * 1100 - sale * 1100, 0);
+      rr(c, 60, 440, 960, 190, 40); c.fillStyle = 'rgba(28,40,68,.97)'; c.fill(); c.lineWidth = 2; c.strokeStyle = '#34507E'; c.stroke();
+      rr(c, 94, 481, 108, 108, 26); c.fillStyle = '#070B14'; c.fill(); logo(c, 148, 535, 96, false);
+      texto(c, 'TIKI DATA', 232, 488, 30, 600, '#AEB9CC', 'left', 600, F_TXT); texto(c, 'ahora', 990, 488, 30, 600, '#AEB9CC', 'right', 200, F_TXT);
+      texto(c, t1, 232, 538, 46, 900, '#EEF2F7', 'left', 750); texto(c, t2, 232, 590, 31, 600, '#DCE3EE', 'left', 750, F_TXT);
+      c.restore();
+    }
+  });
+  capa('lista', u => {
+    marca(c, 40);
+    const gs = G.goles.slice(0, 6), alto = gs.length > 4 ? 150 : 190, y0 = 760 - (gs.length > 4 ? 40 : 0);
+    texto(c, 'LOS GOLES', VW / 2, 620, 100, 900, '#EEF2F7');
+    let l = 0, v = 0;
+    gs.forEach((g, i) => {
+      if (g.equipo === p.local.id) l++; else v++;
+      const kk = eOut((u - .3 - i * .55) / .5), y = y0 + i * (alto + 20);
+      c.save(); c.globalAlpha *= kk; c.translate((1 - kk) * 300, 0);
+      rr(c, 90, y, 900, alto, 28); c.fillStyle = '#0D1626'; c.fill(); c.lineWidth = 3; c.strokeStyle = i === gs.length - 1 ? ac : '#1C2B47'; c.stroke();
+      const kit = g.equipo === p.local.id ? p.kitL : p.kitV;
+      rr(c, 124, y + (alto - 120) / 2, 120, 120, 22); c.fillStyle = colorMin(kit); c.fill();
+      texto(c, `${g.minuto}'`, 184, y + alto / 2 + 2, 48, 900, '#fff', 'center', 110);
+      texto(c, g.jugador || 'Gol', 280, y + alto / 2 - 24, 48, 900, '#EEF2F7', 'left', 680);
+      texto(c, `${g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre} · ${l} - ${v}${g.tipo === 'PENALTY' ? ' · de penal' : g.tipo === 'OWN' ? ' · en contra' : ''}`, 280, y + alto / 2 + 30, 32, 600, '#8E9AAE', 'left', 680, F_TXT);
+      c.restore();
+    });
+  });
+  capa('dato', u => {
+    pill(c, tx.tag || '⚽', VW / 2, 640, '#E5332A', eBack(u / .5));
+    tituloLineas(c, tx.titulo || '', 930, 150, ac);
+    texto(c, tx.sub || '', VW / 2, 1220, 50, 700, '#EEF2F7', 'center', 960, F_TXT);
+    texto(c, `${p.local.nombre} ${p.gl ?? 0} - ${p.gv ?? 0} ${p.visitante.nombre}`, VW / 2, 1310, 40, 600, '#8E9AAE', 'center', 960, F_TXT);
+  });
+  capa('fin', u => {
+    c.save(); c.translate(VW / 2, 640); const e = 0.6 + 0.4 * eBack(u / .7); c.scale(e, e); logo(c, 0, 0, 440); c.restore();
+    tituloLineas(c, 'SEGUÍ TODO\nEN TIKI DATA', 1020, 96, ac);
+    texto(c, 'Resultados en vivo · Avisos de gol · Noticias · Trivia', VW / 2, 1180, 40, 600, '#C9CFD8', 'center', 980, F_TXT);
+    const s = 1 + .05 * Math.sin(Math.max(0, u - .8) * 5);
+    c.save(); c.translate(VW / 2, 1340); c.scale(s, s); rr(c, -340, -62, 680, 124, 30); c.fillStyle = ac; c.fill(); texto(c, location.host || 'tikidata.onrender.com', 0, 2, 48, 900, '#05070D', 'center', 620); c.restore();
+    texto(c, '👆 Link en la bio · Es gratis', VW / 2, 1480, 40, 700, '#8FB8FA', 'center', 980, F_TXT);
+  });
+}
+function nombreArchivo(p, ext) { const n = (s) => normalizarJS(s).replace(/\s+/g, '_'); return `TikiData_${n(p.local.nombre)}_${n(p.visitante.nombre)}.${ext}`; }
+function normalizarJS(s) { return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9 ]/g, '').trim(); }
+function bajar(blob, nombre) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = nombre; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 4000); }
+async function crearPortada(p, tx) {
+  const k = await prepararRecursos(p);
+  const cv = document.createElement('canvas'); cv.width = VW; cv.height = VH;
+  dibujarPortada(cv.getContext('2d'), p, k, tx, p.nivel === 2 ? '#F5C400' : '#4F8FF7');
+  cv.toBlob(b => bajar(b, nombreArchivo(p, 'png').replace('.png', '_portada.png')), 'image/png');
+}
+async function crearVideo(p, tx) {
+  if (!window.MediaRecorder || !HTMLCanvasElement.prototype.captureStream) { alertaSimple('Este navegador no puede grabar videos. Probá con Google Chrome.'); return; }
+  const info = EST.goles[p.id] || { goles: [], estadio: '' };
+  const k = await prepararRecursos(p);
+  const G = guion(p, info, tx);
+  const cv = document.createElement('canvas'); cv.width = VW; cv.height = VH; const c = cv.getContext('2d');
+  const tipos = ['video/mp4;codecs=avc1.42E01E', 'video/mp4', 'video/webm;codecs=vp9', 'video/webm'];
+  const tipo = tipos.find(x => MediaRecorder.isTypeSupported(x)) || '';
+  const capa = document.createElement('div'); capa.className = 'est-grab';
+  capa.innerHTML = `<div class="est-grab-in"><b>🎬 Grabando el video…</b><div class="est-prev"></div><div class="barra-tiempo"><div id="estBarra" style="width:0%"></div></div>
+    <small>No cambies de pestaña ni bloquees la pantalla. Tarda ${Math.round(G.total)} segundos.</small></div>`;
+  capa.querySelector('.est-prev').appendChild(cv); document.body.appendChild(capa);
+  dibujarCuadro(c, 0, p, k, tx, G, info);
+  const flujo = cv.captureStream(30), partes = [];
+  const rec = new MediaRecorder(flujo, tipo ? { mimeType: tipo, videoBitsPerSecond: 8000000 } : undefined);
+  rec.ondataavailable = e => { if (e.data && e.data.size) partes.push(e.data); };
+  const fin = new Promise(ok => rec.onstop = ok);
+  rec.start(500);
+  const inicio = performance.now();
+  await new Promise(ok => {
+    const cuadro = () => {
+      const t = (performance.now() - inicio) / 1000;
+      dibujarCuadro(c, Math.min(t, G.total), p, k, tx, G, info);
+      const barra = document.getElementById('estBarra'); if (barra) barra.style.width = (100 * t / G.total) + '%';
+      if (t >= G.total + 0.3) return ok();
+      requestAnimationFrame(cuadro);
+    };
+    requestAnimationFrame(cuadro);
+  });
+  rec.stop(); await fin; flujo.getTracks().forEach(tr => tr.stop());
+  const mime = rec.mimeType || tipo || 'video/webm', ext = mime.includes('mp4') ? 'mp4' : 'webm';
+  bajar(new Blob(partes, { type: mime }), nombreArchivo(p, ext));
+  capa.querySelector('.est-grab-in').innerHTML = `<b>✅ ¡Video listo!</b><p style="margin:8px 0;font-size:14px;color:#C7D2E0">Se descargó <b>${esc(nombreArchivo(p, ext))}</b>.${ext === 'webm' ? '<br>Ojo: salió en formato WEBM. Para Instagram conviene MP4: hacelo desde Google Chrome.' : ''}</p>
+    <div style="display:flex;gap:8px"><button class="boton" id="estPortada" style="flex:1">🖼️ Bajar portada</button><button class="boton sec" id="estCerrar">Cerrar</button></div>`;
+  $('estPortada').onclick = () => crearPortada(p, tx);
+  $('estCerrar').onclick = () => capa.remove();
+}
+function alertaSimple(msg) {
+  const d = document.createElement('div'); d.className = 'est-grab';
+  d.innerHTML = `<div class="est-grab-in"><b>${esc(msg)}</b><button class="boton" style="margin-top:12px;width:100%">Entendido</button></div>`;
+  d.querySelector('button').onclick = () => d.remove(); document.body.appendChild(d);
+}
+
 /* ---------- En vivo gratis: transmisiones oficiales de YouTube ---------- */
 async function vistaEnVivo(idVideo) {
   $('vista').innerHTML = volver('En vivo gratis') + '<main id="vivo"><div class="cargando">Buscando partidos en vivo…</div></main>';
@@ -2686,6 +3174,7 @@ async function vistaPartido(id) {
   let estado = p.vivo ? `${estadoTexto(p)} · En vivo` : p.terminado ? 'Final' : fechaTxt;
   const esHL = p.fuente === 'hl';
   const pest = esHL ? ['Resumen', 'Goles', 'Formación', 'Estadísticas', 'Minuto a minuto'] : ['Resumen', 'Goles', 'Historial'];
+  if (esHL && p.historial && p.historial.total) pest.push('Historial');
   $('vista').innerHTML = `<div class="volver"><a class="icono" href="javascript:history.back()" aria-label="Volver">${svg(ICON.atras)}</a>
       <a href="#/liga/${p.liga}" style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">${esc(p.ligaNombre)}</b><small style="color:var(--suave);font-size:12px">${p.jornada ? 'Fecha ' + p.jornada : esc((p.fase || '').replaceAll('_',' ').toLowerCase())}</small></a></div>
     <section class="marcador">
@@ -2703,17 +3192,18 @@ async function vistaPartido(id) {
         ${p.estadio ? `<div class="dato"><span>Estadio</span><span>${esc(p.estadio)}</span></div>` : ''}
         ${p.arbitro ? `<div class="dato"><span>Árbitro</span><span>${esc(p.arbitro)}</span></div>` : ''}
       </section>
-      ${esHL ? (p.vivo ? '<p class="nota-pie">Se actualiza solo cada pocos minutos mientras se juega.</p>' : '') : '<p class="nota-pie">El minuto a minuto, las formaciones y las estadísticas del partido no vienen en el plan gratuito de la API. Se pueden sumar con una API más completa.</p>'}`,
+      ${esHL ? (p.vivo ? '<p class="nota-pie">Se actualiza solo cada uno o dos minutos mientras se juega.</p>' : '') : '<p class="nota-pie">El minuto a minuto, las formaciones y las estadísticas del partido no vienen en el plan gratuito de la API. Se pueden sumar con una API más completa.</p>'}`,
     () => p.goles.length ? `<section class="tarjeta pad">${p.goles.map(g => `<div class="dato"><span style="color:var(--texto);font-weight:700">${g.minuto ? g.minuto + "'" : ''}</span><span style="flex:1">${esc(g.jugador)}${g.tipo === 'OWN' ? ' (en contra)' : g.tipo === 'PENALTY' ? ' (penal)' : ''}${g.asistencia ? `<br><small style="color:var(--suave)">Asistencia: ${esc(g.asistencia)}</small>` : ''}</span><span>${esc(g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre)}</span></div>`).join('')}</section>`
       : `<div class="tarjeta aviso">${jugado ? (esHL ? 'Sin goles por ahora.' : 'El plan gratuito de la API no trae quién hizo los goles de este partido.') : 'Todavía no se jugó.'}</div>`,
-    ...(esHL ? [() => panelFormacion(p), () => '<div id="stats"><div class="cargando">Cargando estadísticas…</div></div>', () => panelMinuto(p)] : [() => {
+    ...(esHL ? [() => panelFormacion(p), () => '<div id="stats"><div class="cargando">Cargando estadísticas…</div></div>', () => panelMinuto(p), () => panelHistorial(p)] : [() => panelHistorial(p)])
+  ];
+  function panelHistorial(p) {
       const h = p.historial;
       if (!h || !h.total) return '<div class="tarjeta aviso">No hay historial entre estos equipos.</div>';
       return `<section class="tarjeta pad"><h2 style="margin:0 0 10px;font-size:15px">Últimos ${h.total} enfrentamientos</h2>
         <div class="datos3"><div><small>Ganó ${esc(p.local.nombre)}</small><b>${h.local ?? 0}</b></div><div><small>Empates</small><b>${h.empates ?? 0}</b></div><div><small>Ganó ${esc(p.visitante.nombre)}</small><b>${h.visitante ?? 0}</b></div></div></section>
         <section class="tarjeta">${h.partidos.map(x => filaPartido(x, true)).join('')}</section>`;
-    }])
-  ];
+  }
   const mostrar = (i) => { $('panel').innerHTML = paneles[i](); document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i)); if (i === 0) cargarResumenYT(p.id); if (esHL && i === 2) cargarFotos($('panel')); if (esHL && i === 3) cargarStats(p); };
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => mostrar(+b.dataset.p));
   mostrar(0);
@@ -2741,7 +3231,7 @@ const STATS_ES = { 'Ball possession':'Posesión', 'Possession':'Posesión', 'Tot
 async function cargarStats(p) {
   const el = $('stats'); if (!el) return;
   try {
-    const d = await pedir('/api/estadisticas?id=' + p.id);
+    const d = await pedir('/api/estadisticas?id=' + (p.hlId || p.id));
     if (!d.estadisticas.length) { el.innerHTML = '<div class="tarjeta aviso">Todavía no hay estadísticas de este partido.</div>'; return; }
     const num = (v) => parseFloat(String(v ?? '0').replace('%', '').replace(',', '.')) || 0;
     el.innerHTML = `<section class="tarjeta pad"><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--suave);margin-bottom:6px"><span>${esc(p.local.nombre)}</span><span>${esc(p.visitante.nombre)}</span></div>
@@ -2958,7 +3448,7 @@ async function vistaClub(id) {
   pedir('/api/club_extra?id=' + id).then(x => {
     if (location.hash !== '#/club/' + id) return;
     Object.entries(x.fotos || {}).forEach(([n, f]) => { FOTOS[n] = f; });
-    if (x.plantel && x.plantel.length && !c.plantel.length) c.plantel = x.plantel;
+    if (x.plantel && x.plantel.length && !c.plantel.length) { c.plantel = x.plantel; c.plantelNota = x.plantelNota || ''; }
     ['capacidad', 'ubicacion', 'fotoEstadio', 'camisetas', 'descripcion', 'apodo', 'wikipedia'].forEach(k => { if (x[k] && (!Array.isArray(x[k]) || x[k].length)) c[k] = x[k]; });
     c.fundacion = c.fundacion || x.fundacion; c.estadio = c.estadio || x.estadio; c.dt = c.dt || x.dt;
     const y = window.scrollY; dibujarClub(c); window.scrollTo(0, y);
@@ -2984,7 +3474,7 @@ function dibujarClub(c) {
         <div class="camisetas">${c.camisetas.map(k => `<figure>${k.imagen ? `<img src="${esc(k.imagen)}" alt="Camiseta ${esc(k.tipo)}" loading="lazy">` : camisetaDibujo(k)}<figcaption>${esc(k.tipo)}${k.aprox ? '<span class="aprox">Colores del club</span>' : ''}</figcaption></figure>`).join('')}</div></section>` : ''}
       <section class="tarjeta"><div class="cab"><div class="t"><b>Próximos partidos</b><small>Los próximos ${c.proximos.length || 5}</small></div></div>
         ${c.proximos.length ? c.proximos.map(p => { const d = new Date(p.fecha + 'T12:00:00'); return `<div style="padding:8px 12px 0;font-size:11px;font-weight:700;color:var(--suave)">${DIAS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1} · ${esc(p.ligaNombre)}</div>` + filaPartido(p); }).join('') : '<div class="aviso">No hay partidos programados.</div>'}</section>
-      ${c.plantel.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Plantel actual</b><small>${c.plantel.length} jugadores</small></div></div>
+      ${c.plantel.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Plantel actual</b><small>${c.plantelNota ? esc(c.plantelNota) + ' · ' : ''}${c.plantel.length} jugadores</small></div></div>
         ${orden.filter(g => grupos[g]).map(g => `<div style="padding:10px 12px 2px;font-size:11px;font-weight:800;letter-spacing:.6px;color:var(--suave)">${g.toUpperCase()}</div>` +
           grupos[g].map(j => `<a class="jug" style="grid-template-columns:40px 1fr auto" href="#/ficha/${encodeURIComponent(j.nombre)}">${caraHTML(j)}<span><b style="font-size:14px">${esc(j.nombre)}</b><br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small></span><small style="color:var(--suave)">${edad(j.nacimiento)}</small></a>`).join('')).join('')}</section>` : ''}
       ${c.descripcion ? `<section class="tarjeta pad"><h2 style="margin:0 0 8px;font-size:15px">Historia</h2><p style="margin:0;font-size:13px;line-height:1.55;color:#C7D2E0">${esc(c.descripcion)}…</p></section>` : ''}
@@ -3150,6 +3640,7 @@ function ruta() {
   if (v === 'favoritos') return vistaFavoritos();
   if (v === 'envivo') return vistaEnVivo(a);
   if (v === 'trivia') return vistaTrivia();
+  if (v === 'estudio') return vistaEstudio();
   if (v === 'club') return vistaClub(a);
   if (v === 'ficha') return vistaFicha(a);
   vistaInicio();
@@ -3191,9 +3682,17 @@ async function revisarGoles() {
   } catch (e) { proximo = 2 * 60 * 1000; }
   avisos.timer = setTimeout(revisarGoles, proximo);
 }
-function avisoGol(p, equipo, gl, gv) {
-  const min = p.minuto ? ` · ${p.minuto}'` : '';
-  mostrarAviso(p, `⚽ ¡GOL de ${equipo.nombre}!`, `${p.local.nombre} ${gl} - ${gv} ${p.visitante.nombre}${min}`);
+async function avisoGol(p, equipo, gl, gv) {
+  let quien = p.minuto ? ` · ${p.minuto}'` : '';
+  try {
+    // quién lo hizo: se busca en la ficha del partido (si todavía no está cargado, sale sin nombre)
+    const ctl = new AbortController(); const corte = setTimeout(() => ctl.abort(), 4000);  // si tarda, avisa igual sin el nombre
+    const r = await fetch('/api/partido?id=' + p.id, { signal: ctl.signal }); clearTimeout(corte);
+    const d = r.ok ? await r.json() : {};
+    const g = (d.goles || []).filter(x => String(x.equipo) === String(equipo.id)).pop();
+    if (g && g.jugador) quien = ` · ${g.jugador}${g.tipo === 'PENALTY' ? ' (penal)' : g.tipo === 'OWN' ? ' (en contra)' : ''}${g.minuto ? ' ' + g.minuto + "'" : ''}`;
+  } catch (e) {}
+  mostrarAviso(p, `⚽ ¡GOL de ${equipo.nombre}!`, `${p.local.nombre} ${gl} - ${gv} ${p.visitante.nombre}${quien}`);
 }
 function mostrarAviso(p, titulo, texto) {
   // 1) cartel dentro de la app, como una notificación
@@ -3381,6 +3880,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_goleadores(liga))
         elif url.path == "/api/equipos":
             self.json(lambda: datos_equipos(liga))
+        elif url.path == "/api/estudio":
+            self.json(datos_estudio)
         elif url.path == "/api/envivo":
             self.json(datos_en_vivo)
         elif url.path == "/api/resumen" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
