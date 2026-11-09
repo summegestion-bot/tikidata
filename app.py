@@ -2602,7 +2602,10 @@ nav.abajo .on { color:var(--azul); }
 .pos.top { background:var(--azul); color:var(--fondo); }
 .pts { font-family:Montserrat, sans-serif; font-weight:900; font-size:16px; }
 .jug { display:grid; grid-template-columns:24px 40px 1fr auto; align-items:center; gap:10px; padding:10px 12px; border-top:1px solid var(--linea); }
-.avatar { width:40px; height:40px; border-radius:20px; background:#1B2E4F; color:#C7D2E0; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; }
+.avatar.pos-av, .pos-av { font-size:12px; background:var(--c) !important; color:#0B1220 !important; align-items:center !important; font-weight:900 !important; letter-spacing:.3px; box-shadow:inset 0 -3px 0 rgba(0,0,0,.18); }
+.avatar.xl.pos-av { font-size:24px; }
+.silueta { width:80%; height:80%; margin-bottom:-2px; opacity:.85; }
+.avatar { width:40px; height:40px; border-radius:20px; background:#1B2E4F; color:#6F86A8; overflow:hidden; align-items:flex-end !important; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; }
 .avatar.xl { width:84px; height:84px; border-radius:42px; font-size:26px; }
 .goles { font-family:Montserrat, sans-serif; font-weight:900; font-size:18px; }
 .datos3 { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
@@ -2798,7 +2801,8 @@ function escudo(t, cls='esc') {
   return t && t.escudo ? `<img class="${cls}" src="${esc(t.escudo)}" alt="" loading="lazy"${club}>`
     : `<span class="${cls} ph"${club}>${esc(((t && (t.sigla || t.nombre)) || '?').slice(0,3))}</span>`;
 }
-function iniciales(n) { return esc(String(n || '?').split(' ').filter(Boolean).slice(0,2).map(x => x[0]).join('').toUpperCase()); }
+// En lugar de las iniciales: la silueta de un jugador
+function iniciales(n) { return '<svg class="silueta" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4.2" fill="currentColor"/><path d="M3.8 21c.6-4.6 4-7.4 8.2-7.4s7.6 2.8 8.2 7.4z" fill="currentColor"/></svg>'; }
 function estadoTexto(p) {
   if (p.vivo) return p.estado === 'PAUSED' ? 'ET' : (p.minuto ? p.minuto + "'" : 'Vivo');
   if (p.terminado) return 'Final';
@@ -3236,7 +3240,8 @@ async function vistaPartido(id) {
 }
 
 const lado = { local: true };
-const POS_COL = { ARQ:'#F5C451', DEF:'#4F8FF7', MED:'#3DD68C', DEL:'#FF6B6B', SUP:'#8E9AAE' };
+const POS_COL = { ARQ:'#A78BFA', DEF:'#FF5A5F', MED:'#FDBA74', DEL:'#3DD68C', SUP:'#8E9AAE' };
+const POS_ABR = { ARQ:'ARQ', DEF:'DFC', MED:'MC', DEL:'DC', SUP:'SUP' };
 const POS_NOM = { ARQ:'Arquero', DEF:'Defensor', MED:'Mediocampista', DEL:'Delantero', SUP:'Suplente' };
 function posDeTexto(t) { t = (t || '').toLowerCase(); if (t.includes('goal') || t === 'g') return 'ARQ'; if (t.includes('def') || t.includes('back') || t === 'd') return 'DEF'; if (t.includes('mid') || t === 'm') return 'MED'; if (t.includes('att') || t.includes('forw') || t.includes('off') || t.includes('strik') || t.includes('wing') || t === 'f') return 'DEL'; return ''; }
 function posDeFila(i, n) { return i === 0 ? 'ARQ' : i === 1 ? 'DEF' : i === n - 1 ? 'DEL' : 'MED'; }
@@ -3247,7 +3252,7 @@ function panelFormacion(p) {
     if (!eq || !eq.filas.length) return '<div class="aviso">Sin datos.</div>';
     const n = eq.filas.length;
     const ficha = (j, pos) => { const c = POS_COL[pos];
-      return `<div class="slot"><div class="ficha-j" style="--c:${c}" title="${POS_NOM[pos]}">${t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : `<span class="pos-txt">${pos}</span>`}${j.numero ? `<span class="num">${j.numero}</span>` : ''}</div>
+      return `<div class="slot"><div class="ficha-j" style="--c:${c}" title="${POS_NOM[pos]}">${t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : `<span class="pos-txt">${POS_ABR[pos]}</span>`}${j.numero ? `<span class="num">${j.numero}</span>` : ''}</div>
         <span class="nom-slot">${esc(String(j.nombre).split(' ').slice(-1)[0])}</span></div>`; };
     const filas = eq.filas.map((f, i) => f.map(j => ficha(j, posDeTexto(j.posicion) || posDeFila(i, n)))).reverse();
     const leyenda = ['ARQ', 'DEF', 'MED', 'DEL'].map(k => `<span><i style="background:${POS_COL[k]}"></i>${POS_NOM[k]}</span>`).join('');
@@ -3449,7 +3454,7 @@ async function vistaJugador(cod, id) {
   if (!j) { $('vista').innerHTML = volver('Jugador') + '<main><div class="tarjeta aviso">No encontramos al jugador.</div></main>'; return; }
   const gpp = j.partidos ? (j.goles / j.partidos).toFixed(2).replace('.', ',') : '-';
   $('vista').innerHTML = volver('Jugador', '#/jugadores') + `<section style="background:var(--negro);padding:6px 16px 18px;border-bottom:1px solid var(--linea);display:flex;flex-direction:column;gap:16px">
-      <div style="display:flex;align-items:center;gap:14px"><span class="avatar xl">${iniciales(j.nombre)}</span>
+      <div style="display:flex;align-items:center;gap:14px">${caraHTML(j, 'avatar xl')}
         <div style="display:flex;flex-direction:column;gap:6px"><b class="titulo" style="font-size:22px">${esc(j.nombre)}</b>
         <span style="display:flex;align-items:center;gap:8px;font-weight:600">${escudo(j.equipo)}${esc(j.equipo.nombre)}</span></div></div>
       <div class="datos3"><div><small>Nacionalidad</small><b>${esc(j.nacionalidad || '-')}</b></div><div><small>Edad</small><b>${edad(j.nacimiento)}</b></div><div><small>Posición</small><b>${esc(POS[j.posicion] || j.posicion || '-')}</b></div></div></section>
@@ -3684,7 +3689,11 @@ function kitFalla(img) {
 /* ---------- Caras de los jugadores ---------- */
 const FOTOS = {};
 // Sin caras: cada jugador se muestra con un círculo con sus iniciales (más rápido)
-function caraHTML(j, cls = 'avatar') { return `<span class="${cls}">${iniciales(j.nombre)}</span>`; }
+function caraHTML(j, cls = 'avatar') {
+  // el redondel con el color y la sigla de su posición (si no se sabe la posición, una silueta)
+  const pos = posDeTexto(j.posicion);
+  return pos ? `<span class="${cls} pos-av" style="--c:${POS_COL[pos]}" title="${POS_NOM[pos]}">${POS_ABR[pos]}</span>` : `<span class="${cls}">${iniciales(j.nombre)}</span>`;
+}
 function cargarFotos() {}
 /* ---------- Ficha extendida de un jugador: foto, datos y clubes anteriores ---------- */
 async function bloqueJugadorExtra(nombre, destino) {
