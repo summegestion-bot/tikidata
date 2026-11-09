@@ -1119,6 +1119,30 @@ def plantel_hl(id_txt, partidos=5):
     return plantel
 
 
+def hl_buscar_ligas():
+    """Revisión: todo lo que Highlightly tiene de Argentina, buscado de varias formas (se guarda 1 día)."""
+    busquedas = [{"countryCode": "AR"}, {"countryName": "Argentina"}, {"leagueName": "Primera B"}, {"leagueName": "Primera B Metropolitana"},
+                 {"leagueName": "Metropolitana"}, {"leagueName": "Reserve"}, {"leagueName": "Reserva"}, {"leagueName": "Primera B Nacional"}]
+    res = {}
+    for b in busquedas:
+        nombres, offset = [], 0
+        for _ in range(5):
+            try:
+                d = hl("/leagues", dict(b, limit=100, offset=offset), ttl=86400)
+            except Exception as e:
+                nombres.append("ERROR: " + str(e))
+                break
+            ligas = _lista(d)
+            for lg in ligas:
+                pais = lg.get("country") or {}
+                nombres.append(f"{lg.get('name')} · id {lg.get('id')} · {pais.get('name') or pais.get('code') or ''}")
+            offset += 100
+            if len(ligas) < 100:
+                break
+        res[" ".join(f"{k}={v}" for k, v in b.items())] = nombres
+    return res
+
+
 def hl_estado():
     return {"clave": bool(HL_KEY), "limiteDelPlan": HL_LIMITE, "reserva": HL_RESERVA, "usadosHoy": _hl["usados"], "restantes": _hl["restantes"], "limite": _hl["limite"],
             "ultimoError": _hl["error"],
@@ -3962,6 +3986,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_proximos(q["equipo"]))
         elif url.path == "/api/estadisticas" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_estadisticas_hl(q["id"][1:]))
+        elif url.path == "/api/hl_buscar":
+            self.json(hl_buscar_ligas)
         elif url.path == "/api/hl_estado":
             self.json(hl_estado)
         elif url.path == "/api/noticias":
