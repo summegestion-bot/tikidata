@@ -3061,7 +3061,7 @@ main { padding:14px 10px; display:flex; flex-direction:column; gap:14px; }
 .nota .img .fuente { position:absolute; top:8px; left:8px; font-size:10px; padding:2px 6px; background:rgba(5,7,13,.85); color:var(--texto); }
 .nota .txt { padding:10px; display:flex; flex-direction:column; gap:6px; font-weight:700; font-size:13px; line-height:1.3; }
 nav.abajo { position:fixed; left:0; right:0; bottom:0; z-index:5; background:var(--negro); border-top:1px solid var(--linea); }
-nav.abajo div { max-width:560px; margin:0 auto; display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); padding:6px 4px 14px; }
+nav.abajo div { max-width:560px; margin:0 auto; display:grid; grid-template-columns:repeat(4, minmax(0,1fr)); padding:6px 4px 14px; }
 nav.abajo a, nav.abajo button { display:flex; flex-direction:column; align-items:center; gap:3px; padding:8px 0; font-size:11px; font-weight:600; color:var(--suave); background:none; border:0; }
 nav.abajo .on { color:var(--azul); }
 .cortina { position:fixed; inset:0; z-index:20; display:none; }
