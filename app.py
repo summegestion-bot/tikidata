@@ -166,6 +166,78 @@ def partido(p, liga_defecto=None):
     }
 
 
+# ---------------------------------------------------------------------------
+# Respuestas rápidas: si ya hay algo guardado se muestra al instante y se actualiza por detrás
+# ---------------------------------------------------------------------------
+_rapido = {}
+_rapido_en_curso = set()
+_rapido_candado = threading.Lock()
+_ultima_visita = {"t": 0.0}
+
+
+def rapido(clave, funcion, frescura):
+    _ultima_visita["t"] = time.time()
+    ahora = time.time()
+    guardado = _rapido.get(clave)
+    if guardado and ahora - guardado[0] < frescura:
+        return guardado[1]
+    if guardado:
+        with _rapido_candado:
+            if clave in _rapido_en_curso:
+                return guardado[1]
+            _rapido_en_curso.add(clave)
+
+        def actualizar():
+            try:
+                _rapido[clave] = (time.time(), funcion())
+            except Exception:
+                pass
+            finally:
+                _rapido_en_curso.discard(clave)
+        threading.Thread(target=actualizar, daemon=True).start()
+        return guardado[1]  # se muestra lo último que había, sin esperar
+    valor = funcion()
+    _rapido[clave] = (time.time(), valor)
+    return valor
+
+
+def hoy_rapido(fecha):
+    es_hoy = fecha == datetime.now(ARG).strftime("%Y-%m-%d")
+    return rapido("hoy" + fecha, lambda: datos_hoy(fecha), 25 if es_hoy else 600)
+
+
+def calendario_rapido(liga):
+    return rapido("cal" + liga, lambda: datos_calendario(liga), 900)
+
+
+def precalentar():
+    """Al arrancar el servidor deja todo listo antes de que entre alguien:
+    los partidos de hoy, el calendario de todas las ligas y los goleadores."""
+    time.sleep(3)
+    hoy = datetime.now(ARG).strftime("%Y-%m-%d")
+    try:
+        hoy_rapido(hoy)
+    except Exception:
+        pass
+    ligas = list(HL_LIGAS if HL_KEY else []) + list(LIGAS)
+    for c in ligas:
+        try:
+            calendario_rapido(c)
+        except Exception:
+            pass
+        if c in LIGAS:
+            time.sleep(12)  # football-data deja pocos pedidos por minuto: se dejan libres para los que están mirando
+    # mientras haya gente mirando, los partidos de hoy se mantienen frescos por detrás
+    while True:
+        time.sleep(20)
+        if time.time() - _ultima_visita["t"] < 30 * 60:
+            try:
+                datos = datos_hoy(datetime.now(ARG).strftime("%Y-%m-%d"))
+                _rapido["hoy" + datetime.now(ARG).strftime("%Y-%m-%d")] = (time.time(), datos)
+            except Exception:
+                pass
+
+
 def datos_hoy(fecha):
     grupos_hl = []
     if HL_KEY:
@@ -330,7 +402,7 @@ def _actualizar_goleadores(cod):
 
 def goleadores_al_arrancar():
     """Busca los torneos y cuenta los goles apenas arranca el servidor (y los goles cada 3 horas), sin que nadie espere."""
-    time.sleep(5)
+    time.sleep(90)  # primero se preparan los partidos de hoy y el calendario
     for c in HL_LIGAS:
         try:
             hl_liga(c)
@@ -2797,19 +2869,37 @@ const ICON = {
 const svg = (d, s=22, extra='') => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" ${extra} aria-hidden="true"><path d="${d}"/></svg>`;
 
 // Pide datos al servidor. Si el servidor se está despertando o falla un momento, reintenta solo (hasta 4 veces).
+// Memoria del celular: lo que ya se vio se muestra al instante y se actualiza por detrás.
+// Segundos que cada dato se considera "fresco" (los partidos de hoy, poco; el resto, más).
+const FRESCO = [[/^\/api\/hoy/, 20], [/^\/api\/partido/, 20], [/^\/api\/estadisticas/, 60], [/^\/api\/calendario/, 900], [/^\/api\/tabla/, 300],
+  [/^\/api\/goleadores/, 1800], [/^\/api\/noticias/, 300], [/^\/api\/equipos/, 86400], [/^\/api\/club/, 86400], [/^\/api\/proximos/, 900], [/^\/api\/jugador_extra/, 86400]];
+const VIVOS = /^\/api\/(hoy|partido|estadisticas)/;   // estos nunca se muestran viejos
+const memoria = {};
+function memLeer(ruta) { if (memoria[ruta]) return memoria[ruta]; try { const x = JSON.parse(sessionStorage.getItem('m:' + ruta)); if (x) memoria[ruta] = x; return x; } catch (e) { return null; } }
+function memGuardar(ruta, d) { const x = { t: Date.now(), d }; memoria[ruta] = x; try { sessionStorage.setItem('m:' + ruta, JSON.stringify(x)); } catch (e) {} }
 async function pedir(ruta, intento = 0) {
+  const regla = FRESCO.find(([re]) => re.test(ruta));
+  if (regla && intento === 0) {
+    const m = memLeer(ruta);
+    if (m && Date.now() - m.t < regla[1] * 1000) return m.d;
+    if (m && !VIVOS.test(ruta)) { pedirDeVerdad(ruta).catch(() => {}); return m.d; }  // viejo: se muestra y se actualiza por detrás
+  }
+  return pedirDeVerdad(ruta, intento);
+}
+async function pedirDeVerdad(ruta, intento = 0) {
   let r, d;
   try {
     r = await fetch(ruta);
     d = await r.json();
   } catch (e) {
-    if (intento < 4) { await new Promise(ok => setTimeout(ok, 1500 * (intento + 1))); return pedir(ruta, intento + 1); }
+    if (intento < 4) { await new Promise(ok => setTimeout(ok, 1500 * (intento + 1))); return pedirDeVerdad(ruta, intento + 1); }
     throw new Error('No hay conexión con Tiki Data. Probá de nuevo en un ratito.');
   }
   if (!r.ok) {
-    if (r.status >= 500 && intento < 2) { await new Promise(ok => setTimeout(ok, 2000)); return pedir(ruta, intento + 1); }
+    if (r.status >= 500 && intento < 2) { await new Promise(ok => setTimeout(ok, 2000)); return pedirDeVerdad(ruta, intento + 1); }
     throw new Error(d.error || 'Error desconocido');
   }
+  if (FRESCO.some(([re]) => re.test(ruta)) && !d.calculando) memGuardar(ruta, d);
   return d;
 }
 function escImg(t) { return t && t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : ''; }
@@ -3936,7 +4026,7 @@ MANIFIESTO = {
     ],
 }
 SERVICE_WORKER = r"""
-const CACHE = 'tiki-v2';
+const CACHE = 'tiki-v3';
 const BASE = ['/', '/logo.png', '/icono-192.png', '/manifest.webmanifest'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(BASE)).catch(() => {})); self.skipWaiting(); });
 self.addEventListener('activate', e => {
@@ -3951,10 +4041,18 @@ self.addEventListener('notificationclick', e => {
     return self.clients.openWindow(url);
   }));
 });
-// Primero internet (datos siempre frescos); si no hay señal, lo último guardado.
+// La página y los íconos: se abren al instante desde el celular y se actualizan por detrás.
+// Los datos (/api/...): primero internet; si no hay señal, lo último guardado.
 self.addEventListener('fetch', e => {
   const r = e.request, u = new URL(r.url);
   if (r.method !== 'GET' || u.origin !== location.origin) return;
+  if (!u.pathname.startsWith('/api/') && u.pathname !== '/sw.js') {
+    e.respondWith(caches.open(CACHE).then(c => c.match(r).then(guardada => {
+      const nueva = fetch(r).then(resp => { if (resp.ok) c.put(r, resp.clone()); return resp; }).catch(() => guardada || caches.match('/'));
+      return guardada || nueva;
+    })));
+    return;
+  }
   e.respondWith(fetch(r).then(resp => {
     if (resp.ok) { const copia = resp.clone(); caches.open(CACHE).then(c => c.put(r, copia)); }
     return resp;
@@ -3970,8 +4068,18 @@ ICONOS = {"192": "iVBORw0KGgoAAAANSUhEUgAAAMAAAADACAMAAABlApw1AAABgFBMVEXj4+LV1N
 class Manejador(BaseHTTPRequestHandler):
     def responder(self, codigo, tipo, cuerpo):
         datos = cuerpo if isinstance(cuerpo, bytes) else cuerpo.encode("utf-8")
+        comprimido = False
+        if len(datos) > 1400 and ("json" in tipo or "text" in tipo or "javascript" in tipo) and "gzip" in (self.headers.get("Accept-Encoding") or ""):
+            import gzip
+            datos = gzip.compress(datos, 6)  # viaja hasta 4 veces más liviano
+            comprimido = True
         self.send_response(codigo)
         self.send_header("Content-Type", tipo)
+        if comprimido:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
+        if tipo.startswith("image/"):
+            self.send_header("Cache-Control", "public, max-age=86400")
         self.send_header("Content-Length", str(len(datos)))
         self.end_headers()
         self.wfile.write(datos)
@@ -4022,9 +4130,9 @@ class Manejador(BaseHTTPRequestHandler):
             if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha):
                 self.responder(400, "application/json", json.dumps({"error": "Fecha inválida"}))
                 return
-            self.json(lambda: datos_hoy(fecha))
+            self.json(lambda: hoy_rapido(fecha))
         elif url.path == "/api/calendario":
-            self.json(lambda: datos_calendario(liga))
+            self.json(lambda: calendario_rapido(liga))
         elif url.path == "/api/partido" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_partido(q["id"]))
         elif url.path == "/api/tabla":
@@ -4073,6 +4181,7 @@ if __name__ == "__main__":
     puerto_web = os.environ.get("PORT")
     # Prepara las noticias apenas arranca, así el primero que entra no espera
     threading.Thread(target=lambda: traer_todas(), daemon=True).start()
+    threading.Thread(target=precalentar, daemon=True).start()
     if HL_KEY:
         threading.Thread(target=goleadores_al_arrancar, daemon=True).start()
     if puerto_web:
