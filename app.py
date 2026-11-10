@@ -972,7 +972,8 @@ def _minutos_en_vivo_restantes():
     ahora = time.time()
     corte = datetime.combine(_dia_cupo() + timedelta(days=1), datetime.min.time(), tzinfo=timezone.utc).timestamp()
     ids = ids_prioridad()
-    ventanas = {k: [] for k in PRIORIDAD}
+    # cada liga se consulta por separado, así que se cuentan los minutos de cada liga (no solo el horario total)
+    ventanas = {k: {} for k in PRIORIDAD}
     for clave, (t, d) in list(_memoria.items()):
         if not clave.startswith("hlhoy"):
             continue
@@ -981,9 +982,11 @@ def _minutos_en_vivo_restantes():
                 continue
             a, b = max(ahora, p["_inicio"] - VENTANA_ANTES), min(corte, fin_ventana(p))
             if b > a:
-                ventanas[prioridad_de(p, ids)].append((a, b))
-                if prioridad_de(p, ids) in ("boca", "river") and p.get("liga") == "LPF":
-                    ventanas["LPF"].append((a, b))  # el pedido general de la liga también corre
+                pr = prioridad_de(p, ids)
+                cat = "LPF" if pr in ("boca", "river") and p.get("liga") == "LPF" else ("otros" if pr in ("boca", "river") else pr)
+                ventanas[cat].setdefault(clave, []).append((a, b))  # el pedido general de la liga
+                if pr in ("boca", "river"):
+                    ventanas[pr].setdefault(p["id"], []).append((a, b))  # y el pedido aparte del partido
 
     def union(iv):
         total, fin = 0, 0
@@ -993,7 +996,7 @@ def _minutos_en_vivo_restantes():
                 total += b - a
                 fin = b
         return total / 60
-    return {k: union(v) for k, v in ventanas.items()}
+    return {k: sum(union(iv) for iv in v.values()) for k, v in ventanas.items()}
 
 
 def intervalos():
@@ -1061,6 +1064,8 @@ def hl_hoy(cod, fecha):
     id_liga, temporada = hl_liga(cod)
     d = hl("/matches", {"leagueId": id_liga, "season": temporada, "date": fecha, "timezone": "America/Argentina/Buenos_Aires"}, ttl=0)
     lista = [p for p in (partido_hl(m, cod) for m in _lista(d)) if p["fecha"] == fecha]
+    for p in lista:
+        p["act"] = int(ahora)  # para que el celular adelante el minuto solo hasta la próxima consulta
     _memoria[clave] = (ahora, lista)
     return lista  # recién actualizado: no hace falta pedir Boca/River aparte
 
@@ -1332,6 +1337,8 @@ def datos_partido_hl(id_num):
     m = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
     p = partido_hl(m, _cod_de_partido(f"h{id_num}", m))
     res = dict(p)
+    guardado = _memoria.get(clave)
+    res["act"] = int(guardado[0]) if guardado and isinstance(guardado[0], (int, float)) else int(time.time())
     res["medio"] = [None, None]
     res["estadio"] = (m.get("venue") or {}).get("name", "") if isinstance(m.get("venue"), dict) else ""
     res["arbitro"] = (m.get("referee") or {}).get("name", "") if isinstance(m.get("referee"), dict) else ""
@@ -3441,8 +3448,18 @@ function completarEscudos() {
 new MutationObserver(() => { clearTimeout(completarEscudos.t); completarEscudos.t = setTimeout(completarEscudos, 400); }).observe(document.body, { childList: true, subtree: true });
 // En lugar de las iniciales: la silueta de un jugador
 function iniciales(n) { return '<svg class="silueta" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4.2" fill="currentColor"/><path d="M3.8 21c.6-4.6 4-7.4 8.2-7.4s7.6 2.8 8.2 7.4z" fill="currentColor"/></svg>'; }
+// El minuto avanza solo en el celular entre una actualización y la otra
+function minutoAhora(min, desde) {
+  const m = parseInt(min, 10);
+  if (isNaN(m)) return min ? min + "'" : 'Vivo';
+  const v = m + Math.max(0, Math.floor((Date.now() - desde) / 60000));
+  const tope = m <= 45 ? 45 : m <= 90 ? 90 : m <= 105 ? 105 : 120;
+  return v > tope ? tope + "+'" : v + "'";
+}
+function marcaMinuto(p) { if (!p.vivo || p.estado === 'PAUSED' || !p.minuto) return ''; return ` data-min="${esc(String(p.minuto))}" data-desde="${p.act ? p.act * 1000 : Date.now()}"`; }
+setInterval(() => document.querySelectorAll('[data-min]').forEach(el => { const t = minutoAhora(el.dataset.min, +el.dataset.desde); if (el.firstChild && el.firstChild.nodeType === 3) el.firstChild.nodeValue = t; else if (!el.children.length) el.textContent = t; }), 15000);
 function estadoTexto(p) {
-  if (p.vivo) return p.estado === 'PAUSED' ? 'ET' : (p.minuto ? p.minuto + "'" : 'Vivo');
+  if (p.vivo) return p.estado === 'PAUSED' ? 'ET' : (p.minuto ? minutoAhora(p.minuto, p.act ? p.act * 1000 : Date.now()) : 'Vivo');
   if (p.terminado) return 'Final';
   if (p.estado === 'POSTPONED') return 'Post.';
   if (p.estado === 'CANCELLED') return 'Susp.';
@@ -3453,7 +3470,7 @@ function filaPartido(p, mostrarLiga=false) {
   const pl = jugado && p.terminado && p.gl < p.gv, pv = jugado && p.terminado && p.gv < p.gl;
   const st = mostrarLiga ? `<span style="display:flex;flex-direction:column;align-items:center;gap:3px">${esc(estadoTexto(p))}<i style="font-style:normal;font-size:9px;font-weight:800;color:${COLOR[p.liga]||'#8E9AAE'}">${esc(p.liga)}</i></span>` : esc(estadoTexto(p));
   return `<a class="fila" href="#/partido/${p.id}">
-    <span class="st ${p.vivo ? 'vivo' : ''}">${st}</span>
+    <span class="st ${p.vivo ? 'vivo' : ''}"${mostrarLiga ? '' : marcaMinuto(p)}>${st}</span>
     <span class="fila-c"><span class="fila-top">
       <span class="eq der ${pl ? 'pierde' : ''}"><span class="nom">${esc(p.local.nombre)}</span>${escudo(p.local)}</span>
       <span class="marc ${p.vivo ? 'vivo' : jugado ? 'jug' : ''}">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</span>
@@ -3578,12 +3595,26 @@ async function vistaInicio(fecha) {
     <nav class="dias" aria-label="Día">${dias}<a class="dia" href="#/calendario" aria-label="Abrir calendario" style="color:var(--azul)">${svg(ICON.cal,20)}</a></nav>
     <main><div id="favs"></div><div id="ligasHoy" style="display:flex;flex-direction:column;gap:14px"><div class="cargando">Buscando partidos…</div></div><div id="noticias"></div></main>`;
   cargarNoticias();
+  pintarHoy(fecha, false);
+}
+let timerHoy = null; const MARC_PREV = {};
+async function pintarHoy(fecha, deNuevo) {
+  clearTimeout(timerHoy);
   const favs = leer('tiki_favs', []);
+  const hashAntes = location.hash;
   try {
-    const d = await pedir('/api/hoy?fecha=' + fecha);
+    const d = deNuevo ? await pedirDeVerdad('/api/hoy?fecha=' + fecha) : await pedir('/api/hoy?fecha=' + fecha);
+    if (location.hash !== hashAntes || !$('ligasHoy')) return;  // ya se fue a otra pantalla
+    // mientras haya partidos jugándose (o por empezar en la próxima hora), se vuelve a pedir cada 40 segundos
+    const ahoraMin = new Date().getHours() * 60 + new Date().getMinutes();
+    const porEmpezar = (p) => !p.terminado && !p.vivo && p.hora && /^\d\d:\d\d$/.test(p.hora) && (() => { const m = +p.hora.slice(0,2) * 60 + +p.hora.slice(3); return m - ahoraMin <= 60 && ahoraMin - m <= 150; })();
+    const activos = fecha === hoyISO() && d.grupos.some(g => g.partidos.some(p => p.vivo || porEmpezar(p)));
+    if (activos) timerHoy = setTimeout(() => { if (location.hash === hashAntes && document.visibilityState === 'visible') pintarHoy(fecha, true); else if (location.hash === hashAntes) document.addEventListener('visibilitychange', function f() { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); if (location.hash === hashAntes) pintarHoy(fecha, true); } }); }, 40000);
+    // si cambió el resultado, se vuelven a buscar los goleadores de ese partido
+    d.grupos.forEach(g => g.partidos.forEach(p => { const k = p.gl + '-' + p.gv; if (MARC_PREV[p.id] && MARC_PREV[p.id] !== k) delete RES_GOLES[p.id]; MARC_PREV[p.id] = k; }));
     const todos = d.grupos.flatMap(g => g.partidos);
     const vivos = todos.filter(p => p.vivo);
-    if (vivos.length) $('vivos').innerHTML = `<div class="vivos"><span class="tag">EN VIVO</span>` + vivos.map(p => `<a class="chipvivo" href="#/partido/${p.id}"><b>${esc(estadoTexto(p))}</b>${escudo(p.local)}<strong>${p.gl ?? 0}-${p.gv ?? 0}</strong>${escudo(p.visitante)}</a>`).join('') + '</div>';
+    if (vivos.length) $('vivos').innerHTML = `<div class="vivos"><span class="tag">EN VIVO</span>` + vivos.map(p => `<a class="chipvivo" href="#/partido/${p.id}"><b${marcaMinuto(p)}>${esc(estadoTexto(p))}</b>${escudo(p.local)}<strong>${p.gl ?? 0}-${p.gv ?? 0}</strong>${escudo(p.visitante)}</a>`).join('') + '</div>';
     const idsFav = favs.map(f => f.id);
     const deFavs = todos.filter(p => idsFav.includes(p.local.id) || idsFav.includes(p.visitante.id));
     let favHTML = '';
@@ -3599,7 +3630,7 @@ async function vistaInicio(fecha) {
         <a class="cab" href="#/liga/${g.liga}">${g.emblema ? `<img class="emb" src="${esc(g.emblema)}" alt="">` : ''}<div class="t"><b>${esc(g.nombre)}</b><small>${esc(g.region)}</small></div>${svg(ICON.sig,16)}</a>
         ${g.partidos.map(p => filaPartido(p)).join('')}</section>`).join('')
       : `<div class="tarjeta aviso">No hay partidos de las ligas disponibles este día.<br><a class="link" href="#/calendario">Ver el calendario</a></div>`;
-  } catch (e) { $('ligasHoy').innerHTML = error(e); }
+  } catch (e) { if (!deNuevo && $('ligasHoy')) $('ligasHoy').innerHTML = error(e); else if (deNuevo) timerHoy = setTimeout(() => { if (location.hash === hashAntes) pintarHoy(fecha, true); }, 40000); }
 }
 async function cargarProximosFavs(favs) {
   const filas = [];
@@ -3916,10 +3947,21 @@ function camisetaNum(c, num) {
 const PALO_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 21V5h14v16" fill="none" stroke="#EEF2F7" stroke-width="2.2"/><circle cx="18.5" cy="6.5" r="3.6" fill="#fff" stroke="#0B1220" stroke-width="1.2"/></svg>';
 const tarjeta = (roja) => `<i class="tj ${roja ? 'roja' : ''}"></i>`;
 
-async function vistaPartido(id) {
-  $('vista').innerHTML = volver('Partido') + '<div class="cargando">Cargando partido…</div>';
+let timerPartido = null;
+async function vistaPartido(id, pestana, deNuevo) {
+  clearTimeout(timerPartido);
+  const hashAntes = location.hash;
+  if (!deNuevo) $('vista').innerHTML = volver('Partido') + '<div class="cargando">Cargando partido…</div>';
   let p;
-  try { p = await pedir('/api/partido?id=' + id); } catch (e) { $('vista').innerHTML = volver('Partido') + `<main>${error(e)}</main>`; return; }
+  try { p = deNuevo ? await pedirDeVerdad('/api/partido?id=' + id) : await pedir('/api/partido?id=' + id); }
+  catch (e) { if (deNuevo) { timerPartido = setTimeout(() => { if (location.hash === hashAntes) vistaPartido(id, pestana, true); }, 45000); return; } $('vista').innerHTML = volver('Partido') + `<main>${error(e)}</main>`; return; }
+  if (location.hash !== hashAntes) return;
+  const scrollAntes = window.scrollY;
+  // en vivo: se actualiza solo cada 45 segundos, sin cambiar de pestaña
+  if (p.vivo) timerPartido = setTimeout(() => {
+    const otra = () => { if (location.hash !== hashAntes) return; const on = document.querySelector('.pestanas button.on'); vistaPartido(id, on ? on.textContent : pestana, true); };
+    if (document.visibilityState === 'visible') otra(); else document.addEventListener('visibilitychange', function f() { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); otra(); } });
+  }, 45000);
   const jugado = p.gl !== null && p.gl !== undefined;
   const d = new Date(p.fecha + 'T12:00:00');
   const fechaTxt = `${DIAS_L[d.getDay()]} ${d.getDate()} de ${MESES_L[d.getMonth()]} · ${p.hora}`;
@@ -3943,7 +3985,7 @@ async function vistaPartido(id) {
       <a href="#/liga/${p.liga}" style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">${esc(p.ligaNombre)}</b><small style="color:var(--suave);font-size:12px">${p.jornada ? 'Fecha ' + p.jornada : esc(nombreFase(p.fase))}</small></a></div>
     <section class="marcador">
       <div class="lado"><span class="esc-rojas">${escudo(p.local)}${rojas(p.local.id)}</span>${esc(p.local.nombre)}</div>
-      <div><div class="res">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</div><div class="estado ${p.vivo ? 'vivo' : ''}">${esc(estado)}</div></div>
+      <div><div class="res">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</div><div class="estado ${p.vivo ? 'vivo' : ''}">${p.vivo ? `<span${marcaMinuto(p)}>${esc(estadoTexto(p))}</span> · En vivo` : esc(estado)}</div></div>
       <div class="lado"><span class="esc-rojas">${escudo(p.visitante)}${rojas(p.visitante.id)}</span>${esc(p.visitante.nombre)}</div>
     </section>
     ${pest.length > 1 ? `<div class="pestanas" role="tablist">${pest.map(([t], i) => `<button role="tab" data-p="${i}" class="${i === 0 ? 'on' : ''}">${t}</button>`).join('')}</div>` : ''}
@@ -3972,7 +4014,9 @@ async function vistaPartido(id) {
     if (pest[i][0] === 'Formación') { activarFormacion(p, EV); cargarInfoJugadores(p, EV); }
   };
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => mostrar(+b.dataset.p));
-  mostrar(0);
+  const iniPest = pestana ? Math.max(0, pest.findIndex(([t]) => t === pestana)) : 0;
+  mostrar(iniPest);
+  if (deNuevo) window.scrollTo(0, scrollAntes);
   // si no hay estadísticas, la pestaña se saca sola
   if (esHL && (p.vivo || p.terminado)) pedir('/api/estadisticas?id=' + (p.hlId || p.id)).then(s => {
     if (!s.estadisticas || !s.estadisticas.length) { const b = [...document.querySelectorAll('.pestanas button')].find(x => x.textContent === 'Estadísticas'); if (b && !b.classList.contains('on')) b.remove(); }
