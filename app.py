@@ -868,10 +868,27 @@ MINIMO = {"boca": 1, "river": 1, "LPF": 2, "otros": 2}       # minutos mínimos 
 EQUIPOS_PRIORIDAD = {"boca": " boca juniors ", "river": " river plate "}
 
 
+_ids_prio = {"t": 0, "ids": {}}
+_intervalos = {"t": 0, "v": None}
+
+
 def ids_prioridad():
+    """Números de Boca y River (se recalculan cada 10 minutos: recorrer todo lo guardado es pesado)."""
+    if time.time() - _ids_prio["t"] < 600 and _ids_prio["ids"]:
+        return _ids_prio["ids"]
+    ids = _ids_prioridad_calcular()
+    _ids_prio.update(t=time.time(), ids=ids)
+    return ids
+
+
+def _ids_prioridad_calcular():
     """Busca los números de Boca y River en lo guardado de la Liga Profesional
     (así no se confunde con River Plate de Uruguay)."""
     ids = {}
+    try:
+        lpf_id = hl_liga("LPF")[0]
+    except Exception:
+        lpf_id = IDS_CONOCIDOS["LPF"][0]
 
     def mirar(nombre, ident):
         for clave, buscado in EQUIPOS_PRIORIDAD.items():
@@ -882,7 +899,7 @@ def ids_prioridad():
             for p in d:
                 mirar(p["local"]["nombre"], p["local"]["id"])
                 mirar(p["visitante"]["nombre"], p["visitante"]["id"])
-        elif k.startswith("hl/matches{") or k.startswith("hl/standings"):
+        elif (k.startswith("hl/matches{") or k.startswith("hl/standings")) and f'"leagueId": {lpf_id},' in k:
             for m in _lista(d):
                 if isinstance(m, dict) and _elige("LPF", normalizar((m.get("league") or {}).get("name"))):
                     for lado in ("homeTeam", "awayTeam"):
@@ -936,6 +953,15 @@ def _minutos_en_vivo_restantes():
 
 
 def intervalos():
+    """Se recalcula cada 30 segundos (antes se hacía muchas veces por pedido y frenaba el servidor)."""
+    if _intervalos["v"] and time.time() - _intervalos["t"] < 30:
+        return _intervalos["v"]
+    v = _intervalos_calcular()
+    _intervalos.update(t=time.time(), v=v)
+    return v
+
+
+def _intervalos_calcular():
     """Reparte los pedidos que quedan en el día: Boca primero, después River, la liga y las copas."""
     restantes = _hl["restantes"] if _hl["restantes"] is not None else HL_LIMITE - _hl["usados"]
     reserva = max(15, (_hl["limite"] or HL_LIMITE) // 20)
