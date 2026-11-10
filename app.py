@@ -216,6 +216,43 @@ def rapido(clave, funcion, frescura):
             _rapido_primera.pop(clave, None)
 
 
+def rapido_sin_esperar(clave, funcion, frescura):
+    """Como rapido(), pero nunca hace esperar: si todavía no está, lo prepara por detrás y devuelve None."""
+    guardado = _rapido.get(clave)
+    if guardado and time.time() - guardado[0] < frescura:
+        return guardado[1]
+    with _rapido_candado:
+        if clave in _rapido_en_curso or clave in _rapido_primera:
+            return guardado[1] if guardado else None
+        _rapido_en_curso.add(clave)
+
+    def preparar():
+        try:
+            _rapido[clave] = (time.time(), funcion())
+        except Exception:
+            _rapido[clave] = (time.time() - frescura + 300, guardado[1] if guardado else {"partidos": []})  # reintenta en 5 min
+        finally:
+            _rapido_en_curso.discard(clave)
+    threading.Thread(target=preparar, daemon=True).start()
+    return guardado[1] if guardado else None
+
+
+def datos_calendario_mes(anio, mes):
+    """Todos los partidos de un mes de todas las ligas, en un solo pedido.
+    Las ligas que todavía no están listas se avisan en 'faltan' y se preparan por detrás."""
+    prefijo = f"{anio:04d}-{mes:02d}"
+    ligas = [c for c in HL_LIGAS if c not in _hl_no_encontradas] if HL_KEY else []
+    ligas += list(LIGAS)
+    partidos, faltan = [], []
+    for c in ligas:
+        d = rapido_sin_esperar("cal" + c, lambda c=c: datos_calendario(c), 900)
+        if d is None:
+            faltan.append(c)
+            continue
+        partidos += [p for p in d.get("partidos", []) if str(p.get("fecha", "")).startswith(prefijo)]
+    return {"anio": anio, "mes": mes, "partidos": partidos, "faltan": faltan}
+
+
 def hoy_rapido(fecha):
     es_hoy = fecha == datetime.now(ARG).strftime("%Y-%m-%d")
     return rapido("hoy" + fecha, lambda: datos_hoy(fecha), 25 if es_hoy else 600)
@@ -2923,7 +2960,7 @@ const svg = (d, s=22, extra='') => `<svg width="${s}" height="${s}" viewBox="0 0
 // Pide datos al servidor. Si el servidor se está despertando o falla un momento, reintenta solo (hasta 4 veces).
 // Memoria del celular: lo que ya se vio se muestra al instante y se actualiza por detrás.
 // Segundos que cada dato se considera "fresco" (los partidos de hoy, poco; el resto, más).
-const FRESCO = [[/^\/api\/hoy/, 20], [/^\/api\/partido/, 20], [/^\/api\/estadisticas/, 60], [/^\/api\/calendario/, 900], [/^\/api\/tabla/, 300],
+const FRESCO = [[/^\/api\/calendario_mes/, 120], [/^\/api\/hoy/, 20], [/^\/api\/partido/, 20], [/^\/api\/estadisticas/, 60], [/^\/api\/calendario/, 900], [/^\/api\/tabla/, 300],
   [/^\/api\/goleadores/, 1800], [/^\/api\/noticias/, 300], [/^\/api\/equipos/, 86400], [/^\/api\/club/, 86400], [/^\/api\/proximos/, 900], [/^\/api\/jugador_extra/, 86400]];
 const VIVOS = /^\/api\/(hoy|partido|estadisticas)/;   // estos nunca se muestran viejos
 const memoria = {};
@@ -2951,7 +2988,7 @@ async function pedirDeVerdad(ruta, intento = 0) {
     if (r.status >= 500 && intento < 2) { await new Promise(ok => setTimeout(ok, 2000)); return pedirDeVerdad(ruta, intento + 1); }
     throw new Error(d.error || 'Error desconocido');
   }
-  if (FRESCO.some(([re]) => re.test(ruta)) && !d.calculando) memGuardar(ruta, d);
+  if (FRESCO.some(([re]) => re.test(ruta)) && !d.calculando && !(d.faltan && d.faltan.length)) memGuardar(ruta, d);
   return d;
 }
 function escImg(t) { return t && t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : ''; }
@@ -3537,25 +3574,34 @@ async function vistaLiga(cod, pestana) {
 }
 
 /* ---------- Calendario de todo el año ---------- */
-const cal = { liga: 'ALL', mes: new Date().getMonth(), anio: new Date().getFullYear(), dia: new Date().getDate(), datos: {} };
+const cal = { liga: 'ALL', mes: new Date().getMonth(), anio: new Date().getFullYear(), dia: new Date().getDate(), datos: {}, meses: {}, faltan: {} };
 async function vistaCalendario() {
   $('vista').innerHTML = volver('Calendario') + `<main id="panel"><div class="cargando">Armando el calendario de todas las ligas…</div></main>`;
   cal.liga = 'ALL';
-  const cods = Object.keys(LIGAS);
-  await Promise.all(cods.map(async c => { if (!cal.datos[c]) { try { cal.datos[c] = (await pedir('/api/calendario?liga=' + c)).partidos; } catch (e) { cal.datos[c] = []; } } }));
   dibujarCalendario();
+}
+// Un solo pedido por mes con todas las ligas. Si alguna liga todavía se está preparando, se completa sola en unos segundos.
+async function cargarMes(anio, mes, reintento = 0) {
+  const k = anio + '-' + mes, ruta = `/api/calendario_mes?anio=${anio}&mes=${mes + 1}`;
+  let d;
+  try { d = reintento ? await pedirDeVerdad(ruta) : await pedir(ruta); } catch (e) { if (!cal.meses[k]) cal.meses[k] = []; return; }
+  cal.meses[k] = d.partidos; cal.faltan[k] = d.faltan.length;
+  if (d.faltan.length && reintento < 20) setTimeout(() => cargarMes(anio, mes, reintento + 1).then(() => {
+    if (location.hash.startsWith('#/calendario') && cal.anio === anio && cal.mes === mes) { const y = window.scrollY; dibujarCalendario(); window.scrollTo(0, y); }
+  }), 4000);
 }
 const ORDEN_LIGAS = ['LPF','PNA','FEDA','PRC','PRD','CAR','TDC','SCA','LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','MLS','LMX',
   'CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC','FAC','CDR','CIT','DFB','CDF','SAU','WC','CAM','EURO'];
 function dibujarCalendario() {
-  if (cal.liga !== 'ALL' && !cal.datos[cal.liga]) {
-    $('panel').innerHTML = '<div class="cargando">Cargando el calendario…</div>';
-    pedir('/api/calendario?liga=' + cal.liga).then(d => { cal.datos[cal.liga] = d.partidos; }).catch(() => { cal.datos[cal.liga] = []; }).finally(dibujarCalendario);
+  const km = cal.anio + '-' + cal.mes;
+  if (!cal.meses[km]) {
+    if (!$('panel').querySelector('.cargando')) $('panel').innerHTML = '<div class="cargando">Armando el calendario de todas las ligas…</div>';
+    const a = cal.anio, m = cal.mes;
+    cargarMes(a, m).then(() => { if (location.hash.startsWith('#/calendario') && cal.anio === a && cal.mes === m) dibujarCalendario(); });
     return;
   }
-  const activas = cal.liga === 'ALL' ? Object.keys(LIGAS).filter(c => cal.datos[c]) : [cal.liga];
   const porDia = {};
-  activas.forEach(c => (cal.datos[c] || []).forEach(p => { (porDia[p.fecha] ||= []).push(p); }));
+  cal.meses[km].filter(p => LIGAS[p.liga]).forEach(p => { (porDia[p.fecha] ||= []).push(p); });
   const pad = (n) => String(n).padStart(2, '0');
   const iso = (d) => `${cal.anio}-${pad(cal.mes + 1)}-${pad(d)}`;
   const primero = (new Date(cal.anio, cal.mes, 1).getDay() + 6) % 7;
@@ -3582,6 +3628,7 @@ function dibujarCalendario() {
         <b class="titulo" style="font-size:17px">${MESES_L[cal.mes][0].toUpperCase() + MESES_L[cal.mes].slice(1)} ${cal.anio}</b>
         <button class="icono" id="mSig" aria-label="Mes siguiente">${svg(ICON.sig,18)}</button></div>
       <div class="cal">${celdas}</div></section>
+    ${cal.faltan[km] ? `<p class="nota-pie" style="margin:0;text-align:center">⏳ Sumando ${cal.faltan[km]} ligas más…</p>` : ''}
     <div class="cal-dia"><b>${DIAS_L[fd.getDay()][0].toUpperCase() + DIAS_L[fd.getDay()].slice(1)} ${cal.dia} de ${MESES_L[cal.mes]}</b><small>${delDia.length ? delDia.length + ' partidos en ' + porLiga.length + (porLiga.length === 1 ? ' liga' : ' ligas') : 'Sin partidos'}</small></div>
     ${bloques || '<div class="tarjeta aviso">No hay partidos este día.</div>'}`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { cal.liga = b.dataset.l; dibujarCalendario(); });
@@ -4186,6 +4233,8 @@ class Manejador(BaseHTTPRequestHandler):
                 self.responder(400, "application/json", json.dumps({"error": "Fecha inválida"}))
                 return
             self.json(lambda: hoy_rapido(fecha))
+        elif url.path == "/api/calendario_mes" and re.fullmatch(r"\d{4}", q.get("anio", "")) and re.fullmatch(r"\d{1,2}", q.get("mes", "")):
+            self.json(lambda: datos_calendario_mes(int(q["anio"]), int(q["mes"])))
         elif url.path == "/api/calendario":
             self.json(lambda: calendario_rapido(liga))
         elif url.path == "/api/partido" and re.fullmatch(r"h?\d{1,12}", q.get("id", "")):
