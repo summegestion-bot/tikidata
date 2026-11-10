@@ -297,9 +297,10 @@ def datos_hoy(fecha):
             try:
                 return cod, sorted(hl_hoy(cod, fecha), key=lambda p: p["hora"])
             except Exception:
-                return cod, []
+                viejo = _memoria.get("hlhoy" + cod + fecha)  # si falla, se muestra lo último que había
+                return cod, sorted(viejo[1], key=lambda p: p["hora"]) if viejo else []
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(16) as ex:
+        with ThreadPoolExecutor(6) as ex:  # de a pocos, para no saturar a Highlightly
             resultados = list(ex.map(uno, [c for c in HL_LIGAS if c not in _hl_no_encontradas]))
         for cod, ps in resultados:
             if ps:
@@ -758,12 +759,23 @@ def hl(ruta, params=None, ttl=3600):
     with _hl_candado:
         if _hl["dia"] != _dia_cupo():
             _hl.update(dia=_dia_cupo(), usados=0, restantes=None)
-        if _hl["restantes"] is not None and _hl["restantes"] <= 1:
+        pausa = _hl.get("pausa_hasta", 0) - ahora
+        # sin cupo: cada 5 minutos se prueba igual una vez (el cupo puede renovarse a otra hora)
+        sin_cupo = _hl["restantes"] is not None and _hl["restantes"] <= 1 and ahora - _hl.get("ultimo_intento", 0) < 300
+        if sin_cupo or pausa > 3:
             if viejo:
                 return viejo[1]
-            raise RuntimeError("Se terminaron los pedidos de hoy. Mañana se actualiza solo.")
+            raise RuntimeError("Se terminaron los pedidos de hoy. Mañana se actualiza solo." if sin_cupo else "Highlightly pidió esperar unos segundos.")
+        _hl["ultimo_intento"] = ahora
+    if pausa > 0:
+        time.sleep(pausa)
     try:
         r = requests.get(HL_BASE + ruta, params=params, headers={"x-rapidapi-key": HL_KEY}, timeout=15)
+        if r.status_code == 429 and str(r.headers.get("x-ratelimit-requests-remaining", "")).strip() not in ("", "0", "1"):
+            # demasiados pedidos juntos (no es que se terminó el cupo): se espera un poco y se reintenta
+            _hl["pausa_hasta"] = time.time() + 2
+            time.sleep(2)
+            r = requests.get(HL_BASE + ruta, params=params, headers={"x-rapidapi-key": HL_KEY}, timeout=15)
     except Exception as e:
         _hl["error"] = str(e)[:120]
         if viejo:
@@ -779,7 +791,14 @@ def hl(ruta, params=None, ttl=3600):
     if r.status_code != 200:
         _hl["error"] = f"{r.status_code} {r.text[:120]}"
         if r.status_code == 429:
-            _hl["restantes"] = 0
+            try:
+                quedan = int(r.headers.get("x-ratelimit-requests-remaining"))
+            except (TypeError, ValueError):
+                quedan = None
+            if quedan is not None and quedan <= 1:
+                _hl["restantes"] = 0  # ahora sí: se terminó el cupo del día
+            else:
+                _hl["pausa_hasta"] = time.time() + 5  # solo fueron muchos pedidos juntos
         if viejo:
             return viejo[1]
         raise RuntimeError("Highlightly no devolvió datos (" + str(r.status_code) + ").")
