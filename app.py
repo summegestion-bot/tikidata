@@ -583,7 +583,7 @@ def datos_proximos(id_equipo):
 # ---------------------------------------------------------------------------
 HL_KEY = os.environ.get("HIGHLIGHTLY_KEY", "").strip()
 HL_LIMITE = int(os.environ.get("HL_LIMITE", "7500") or 7500)   # pedidos por día del plan
-HL_RESERVA = max(15, HL_LIMITE // 20)  # se guardan para fichas, formaciones, planteles y Europa
+HL_RESERVA = max(15, HL_LIMITE // 4)  # se guardan para fichas, formaciones, planteles y Europa
 HL_BASE = "https://soccer.highlightly.net"
 HL_LIGAS = {
     "LPF": ("Liga Profesional", "Argentina"),
@@ -795,7 +795,7 @@ def hl(ruta, params=None, ttl=3600):
                 quedan = int(r.headers.get("x-ratelimit-requests-remaining"))
             except (TypeError, ValueError):
                 quedan = None
-            if quedan is not None and quedan <= 1:
+            if (quedan is not None and quedan <= 1) or "daily" in r.text.lower():
                 _hl["restantes"] = 0  # ahora sí: se terminó el cupo del día
             else:
                 _hl["pausa_hasta"] = time.time() + 5  # solo fueron muchos pedidos juntos
@@ -927,7 +927,7 @@ def en_ventana(p, ahora=None):
 
 # Prioridades: cuánto más seguido se actualiza cada uno, comparado con Boca (1 = el más rápido)
 PRIORIDAD = {"boca": 1.0, "river": 1.0, "LPF": 1.0, "otros": 1.5}
-MINIMO = {"boca": 1, "river": 1, "LPF": 1, "otros": 1}       # minutos mínimos entre consultas (plan PRO)
+MINIMO = {"boca": 1, "river": 1, "LPF": 1, "otros": 2}       # minutos mínimos entre consultas (plan PRO)
 EQUIPOS_PRIORIDAD = {"boca": " boca juniors ", "river": " river plate "}
 
 
@@ -1030,7 +1030,7 @@ def intervalos():
 def _intervalos_calcular():
     """Reparte los pedidos que quedan en el día: Boca primero, después River, la liga y las copas."""
     restantes = _hl["restantes"] if _hl["restantes"] is not None else HL_LIMITE - _hl["usados"]
-    reserva = max(15, (_hl["limite"] or HL_LIMITE) // 20)
+    reserva = max(15, (_hl["limite"] or HL_LIMITE) // 4)  # una cuarta parte queda para fichas, goleadores de la lista, formaciones y reinicios
     disponibles = max(0, restantes - reserva)  # una parte queda de reserva para fichas, Europa y planteles
     if disponibles <= 0:
         return {k: 60 for k in PRIORIDAD}
@@ -3518,7 +3518,7 @@ function completarGolesFilas() {
   const ahora = Date.now();
   const els = [...document.querySelectorAll('[data-goles]')];
   els.forEach(el => { const x = RES_GOLES[el.dataset.goles]; if (x) ponerRojas(el.dataset.goles, x.d); });
-  const faltan = [...new Set(els.map(e => e.dataset.goles))].filter(id => { const x = RES_GOLES[id]; return !x || (x.vivo && ahora - x.t > 60000); }).slice(0, 30);
+  const faltan = [...new Set(els.map(e => e.dataset.goles))].filter(id => { const x = RES_GOLES[id]; return !x || (x.vivo && ahora - x.t > 300000); }).slice(0, 30);
   if (!faltan.length) return;
   buscandoGoles = true;
   fetch('/api/resumen_goles?ids=' + faltan.join(',')).then(r => r.ok ? r.json() : {}).then(d => {
