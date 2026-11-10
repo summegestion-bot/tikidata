@@ -4125,7 +4125,7 @@ MANIFIESTO = {
     ],
 }
 SERVICE_WORKER = r"""
-const CACHE = 'tiki-v3';
+const CACHE = 'tiki-v4';
 const BASE = ['/', '/logo.png', '/icono-192.png', '/manifest.webmanifest'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(CACHE).then(c => c.addAll(BASE)).catch(() => {})); self.skipWaiting(); });
 self.addEventListener('activate', e => {
@@ -4145,6 +4145,12 @@ self.addEventListener('notificationclick', e => {
 self.addEventListener('fetch', e => {
   const r = e.request, u = new URL(r.url);
   if (r.method !== 'GET' || u.origin !== location.origin) return;
+  // La página: primero internet (así siempre está la última versión); si tarda más de 3 segundos, la guardada.
+  if (r.mode === 'navigate' || u.pathname === '/') {
+    const red = fetch(r).then(resp => { if (resp.ok) { const c2 = resp.clone(); caches.open(CACHE).then(c => c.put('/', c2)); } return resp; });
+    e.respondWith(Promise.race([red, new Promise(ok => setTimeout(ok, 3000))]).then(x => x || caches.match('/').then(g => g || red)).catch(() => caches.match('/')));
+    return;
+  }
   if (!u.pathname.startsWith('/api/') && u.pathname !== '/sw.js') {
     e.respondWith(caches.open(CACHE).then(c => c.match(r).then(guardada => {
       const nueva = fetch(r).then(resp => { if (resp.ok) c.put(r, resp.clone()); return resp; }).catch(() => guardada || caches.match('/'));
