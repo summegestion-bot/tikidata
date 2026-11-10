@@ -172,6 +172,7 @@ def partido(p, liga_defecto=None):
 _rapido = {}
 _rapido_en_curso = set()
 _rapido_candado = threading.Lock()
+_rapido_primera = {}
 _ultima_visita = {"t": 0.0}
 
 
@@ -196,9 +197,23 @@ def rapido(clave, funcion, frescura):
                 _rapido_en_curso.discard(clave)
         threading.Thread(target=actualizar, daemon=True).start()
         return guardado[1]  # se muestra lo último que había, sin esperar
-    valor = funcion()
-    _rapido[clave] = (time.time(), valor)
-    return valor
+    with _rapido_candado:
+        evento = _rapido_primera.get(clave)
+        primero = evento is None
+        if primero:
+            evento = _rapido_primera[clave] = threading.Event()
+    if not primero:
+        evento.wait(60)
+        if clave in _rapido:
+            return _rapido[clave][1]
+    try:
+        valor = funcion()
+        _rapido[clave] = (time.time(), valor)
+        return valor
+    finally:
+        if primero:
+            evento.set()
+            _rapido_primera.pop(clave, None)
 
 
 def hoy_rapido(fecha):
@@ -247,7 +262,7 @@ def datos_hoy(fecha):
             except Exception:
                 return cod, []
         from concurrent.futures import ThreadPoolExecutor
-        with ThreadPoolExecutor(8) as ex:
+        with ThreadPoolExecutor(16) as ex:
             resultados = list(ex.map(uno, [c for c in HL_LIGAS if c not in _hl_no_encontradas]))
         for cod, ps in resultados:
             if ps:
@@ -702,9 +717,23 @@ def _lista(d):
     return []
 
 
+# Números de cada torneo en Highlightly (ya encontrados): así no hay que buscarlos cada vez que arranca el servidor
+IDS_CONOCIDOS = {"LPF": (109712, 2026), "CAR": (111414, 2026), "LIB": (11847, 2026), "SUD": (10145, 2026), "PNA": (110563, 2026),
+                 "URU": (228852, 2026), "CHI": (226299, 2026), "COL": (204173, 2026), "PAR": (213534, 2026), "PER": (239915, 2026),
+                 "ECU": (206726, 2026), "BOL": (293528, 2026), "VEN": (255233, 2026), "MLS": (216087, 2026), "LMX": (223746, 2026),
+                 "SAU": (262041, 2026), "UEL": (3337, 2026), "UECL": (722432, 2026), "FAC": (39079, 2026), "CDR": (122477, 2026),
+                 "CIT": (117371, 2026), "DFB": (69715, 2026), "CDF": (56950, 2026), "CAM": (8443, 2024), "EURO": (4188, 2024)}
+
+
 def hl_liga(cod):
     """(id, temporada) de cada torneo. Se busca una vez por mes, o se fija con HL_IDS."""
     fijos = dict(x.split("=", 1) for x in os.environ.get("HL_IDS", "").replace(" ", "").split(",") if "=" in x)
+    if not fijos.get(cod) and cod in IDS_CONOCIDOS:
+        guardado = _memoria.get("hlliga" + cod)
+        if guardado:
+            return guardado[1]
+        # la temporada nueva se confirma de fondo una vez por día; mientras tanto se usa la conocida
+        return IDS_CONOCIDOS[cod]
     if fijos.get(cod, "").isdigit():
         # número fijado en Render: no gasta pedidos. La temporada es el año actual.
         return int(fijos[cod]), datetime.now(ARG).year
@@ -1189,6 +1218,29 @@ def plantel_hl(id_txt, partidos=5):
         plantel.append({"id": None, "nombre": n, "posicion": pos, "nacimiento": "",
                         "nacionalidad": f"Camiseta {num}" if num else "", "foto": ""})
     return plantel
+
+
+_ARRANQUE = time.time()
+_tiempos = {}
+
+
+def _medir(ruta, seg):
+    t = _tiempos.setdefault(ruta, {"veces": 0, "ultimo": 0, "maximo": 0, "lentas": 0})
+    t["veces"] += 1
+    t["ultimo"] = round(seg, 2)
+    t["maximo"] = max(t["maximo"], round(seg, 2))
+    t["lentas"] += seg > 3
+
+
+def datos_diagnostico():
+    """Para revisar por qué tarda: cuánto tarda cada parte del servidor."""
+    ahora = time.time()
+    return {"minutosPrendido": round((ahora - _ARRANQUE) / 60, 1),
+            "footballDataPedidosUltimoMinuto": len([t for t in _turnos if ahora - t < 60]),
+            "highlightlyRestantesHoy": _hl["restantes"],
+            "preparadoAlArrancar": {k: f"hace {round(ahora - t)} s" for k, (t, _) in _rapido.items() if k.startswith("hoy")},
+            "calendariosListos": len([k for k in _rapido if k.startswith("cal")]),
+            "segundosPorPantalla": dict(sorted(_tiempos.items(), key=lambda x: -x[1]["maximo"]))}
 
 
 def hl_buscar_ligas():
@@ -4085,8 +4137,11 @@ class Manejador(BaseHTTPRequestHandler):
         self.wfile.write(datos)
 
     def json(self, funcion):
+        inicio = time.time()
         try:
-            self.responder(200, "application/json", json.dumps(funcion()))
+            datos = json.dumps(funcion())
+            _medir(urlparse(self.path).path, time.time() - inicio)
+            self.responder(200, "application/json", datos)
         except Exception as e:
             self.responder(502, "application/json", json.dumps({"error": str(e)}))
 
@@ -4157,6 +4212,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_proximos(q["equipo"]))
         elif url.path == "/api/estadisticas" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_estadisticas_hl(q["id"][1:]))
+        elif url.path == "/api/diagnostico":
+            self.json(datos_diagnostico)
         elif url.path == "/api/hl_buscar":
             self.json(hl_buscar_ligas)
         elif url.path == "/api/hl_estado":
