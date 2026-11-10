@@ -381,13 +381,20 @@ def _datos_partido(id_partido):
     try:
         h = api(f"/matches/{id_partido}/head2head?limit=6", ttl=3600)
         ag = h.get("aggregates") or {}
-        res["historial"] = {
-            "total": ag.get("numberOfMatches"),
-            "local": (ag.get("homeTeam") or {}).get("wins"),
-            "empates": (ag.get("homeTeam") or {}).get("draws"),
-            "visitante": (ag.get("awayTeam") or {}).get("wins"),
-            "partidos": [partido(x) for x in h.get("matches", []) if x.get("id") != res["id"]],
-        }
+        previos = [partido(x) for x in h.get("matches", []) if x.get("id") != res["id"]]
+        gana_l = gana_v = empates = 0
+        for x in previos:
+            if x["gl"] is None or x["gv"] is None or not x["terminado"]:
+                continue
+            if x["gl"] == x["gv"]:
+                empates += 1
+                continue
+            ganador = x["local"]["id"] if x["gl"] > x["gv"] else x["visitante"]["id"]
+            if ganador == res["local"]["id"]:
+                gana_l += 1
+            elif ganador == res["visitante"]["id"]:
+                gana_v += 1
+        res["historial"] = {"total": len(previos), "local": gana_l, "empates": empates, "visitante": gana_v, "partidos": previos}
     except Exception:
         res["historial"] = None
     return sumar_detalle_hl(res, p)
@@ -3007,12 +3014,17 @@ main { padding:14px 10px; display:flex; flex-direction:column; gap:14px; }
 .cab { display:flex; align-items:center; gap:10px; padding:10px 12px; background:var(--tarj2); }
 .cab .t { flex:1; display:flex; flex-direction:column; } .cab .t b { font-size:14px; } .cab .t small { font-size:11px; color:var(--suave); }
 .emb { width:26px; height:26px; border-radius:7px; background:#fff; padding:2px; object-fit:contain; }
-.fila { display:grid; grid-template-columns:44px minmax(0,1fr) 62px minmax(0,1fr); align-items:center; gap:6px;
-  padding:11px 10px 11px 6px; border-top:1px solid var(--linea); }
-.fila-goles { display:grid; grid-template-columns:44px minmax(0,1fr) 62px minmax(0,1fr); gap:6px; padding:0 10px 0 6px; margin-top:-6px; }
+.fila { display:grid; grid-template-columns:50px minmax(0,1fr); align-items:stretch; border-top:1px solid var(--linea); }
+.fila .st { display:flex; align-items:center; justify-content:center; border-right:1px solid var(--linea); padding:0 2px; }
+.fila-c { display:flex; flex-direction:column; min-width:0; }
+.fila-top { display:grid; grid-template-columns:minmax(0,1fr) 62px minmax(0,1fr); align-items:center; gap:6px; padding:11px 8px; }
+.fila-goles { display:grid; grid-template-columns:1fr 1fr; border-top:1px solid var(--linea); }
 .fila-goles:empty { display:none; }
-.fila-goles .fg { display:flex; flex-wrap:wrap; gap:2px 8px; font-size:11.5px; color:#AEBBD0; padding-bottom:9px; line-height:1.35; }
-.fila-goles .fg.izq { justify-content:flex-end; text-align:right; }
+.fila-goles .fg { display:flex; flex-direction:column; align-items:flex-start; font-size:11.5px; color:#AEBBD0; line-height:1.35; min-width:0; }
+.fila-goles .fg > span { display:block; width:100%; padding:5px 10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.fila-goles .fg > span + span { border-top:1px solid var(--linea); }
+.fila-goles .fg.izq > span { text-align:right; }
+.fila-goles .fg + .fg { border-left:1px solid var(--linea); }
 .fila-goles em { font-style:normal; color:#3DD68C; font-weight:700; }
 .fg-roja { display:inline-flex; gap:2px; align-items:center; } .fg-roja i { display:block; width:7px; height:10px; border-radius:1.5px; background:#FF3B3B; }
 .fila .st { font-size:12px; font-weight:700; text-align:center; color:#C7D2E0; }
@@ -3163,6 +3175,8 @@ nav.abajo .on { color:var(--azul); }
 .mm2-card.izq { flex-direction:row-reverse; text-align:right; }
 .mm2-card.izq small { justify-content:flex-end; }
 .mm2-ic { flex:none; width:18px; height:18px; opacity:.95; } .mm2-ic svg { width:18px; height:18px; display:block; }
+.mm2-emo { display:block; font-size:15px; line-height:18px; text-align:center; }
+.mm2-ic:has(.mm2-palo) { width:38px; height:24px; } .mm2-palo { position:relative; display:block; width:38px; height:24px; } .mm2-ic .mm2-palo svg, .mm2-palo svg { width:38px; height:24px; display:block; } .mm2-palo i { position:absolute; left:25.6px; top:6.5px; font-style:normal; font-size:12px !important; line-height:12px; width:12px; height:12px; }
 .mm2-txt { display:flex; flex-direction:column; min-width:0; }
 .mm2-txt small { display:flex; gap:6px; align-items:center; font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#7F8CA3; }
 .mm2-nom { font-size:13px; font-weight:600; color:#E6EBF2; line-height:1.3; overflow-wrap:anywhere; }
@@ -3440,10 +3454,12 @@ function filaPartido(p, mostrarLiga=false) {
   const st = mostrarLiga ? `<span style="display:flex;flex-direction:column;align-items:center;gap:3px">${esc(estadoTexto(p))}<i style="font-style:normal;font-size:9px;font-weight:800;color:${COLOR[p.liga]||'#8E9AAE'}">${esc(p.liga)}</i></span>` : esc(estadoTexto(p));
   return `<a class="fila" href="#/partido/${p.id}">
     <span class="st ${p.vivo ? 'vivo' : ''}">${st}</span>
-    <span class="eq der ${pl ? 'pierde' : ''}"><span class="nom">${esc(p.local.nombre)}</span>${escudo(p.local)}</span>
-    <span class="marc ${p.vivo ? 'vivo' : jugado ? 'jug' : ''}">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</span>
-    <span class="eq ${pv ? 'pierde' : ''}">${escudo(p.visitante)}<span class="nom">${esc(p.visitante.nombre)}</span></span>
-  </a>${jugado && (p.terminado || p.vivo) ? `<div class="fila-goles" data-goles="${p.id}"${p.vivo ? ' data-vivo="1"' : ''}>${RES_GOLES[p.id] ? htmlGolesFila(RES_GOLES[p.id].d) : ''}</div>` : ''}`;
+    <span class="fila-c"><span class="fila-top">
+      <span class="eq der ${pl ? 'pierde' : ''}"><span class="nom">${esc(p.local.nombre)}</span>${escudo(p.local)}</span>
+      <span class="marc ${p.vivo ? 'vivo' : jugado ? 'jug' : ''}">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</span>
+      <span class="eq ${pv ? 'pierde' : ''}">${escudo(p.visitante)}<span class="nom">${esc(p.visitante.nombre)}</span></span></span>
+    ${jugado && (p.terminado || p.vivo) ? `<span class="fila-goles" data-goles="${p.id}"${p.vivo ? ' data-vivo="1"' : ''}>${RES_GOLES[p.id] ? htmlGolesFila(RES_GOLES[p.id].d) : ''}</span>` : ''}</span>
+  </a>`;
 }
 // Goleadores y rojas debajo de cada partido de la lista (sin tener que entrar al partido)
 const RES_GOLES = {};
@@ -3453,12 +3469,12 @@ function htmlGolesFila(r) {
   const roja = (n) => n ? `<span class="fg-roja">${'<i></i>'.repeat(n)}</span>` : '';
   if (!r.g.length && !r.rL && !r.rV) return '';
   if (!r.g.length) return '';
-  return `<span></span><span class="fg izq">${lado('L')}</span><span></span><span class="fg">${lado('V')}</span>`;
+  return `<span class="fg izq">${lado('L')}</span><span class="fg">${lado('V')}</span>`;
 }
 function ponerRojas(id, r) {
   const a = document.querySelector(`a.fila[href="#/partido/${id}"]`); if (!a || !r) return;
   const eqs = a.querySelectorAll('.eq');
-  [[eqs[0], r.rL], [eqs[1], r.rV]].forEach(([el, n]) => { if (el && n && !el.querySelector('.fg-roja')) el.insertAdjacentHTML(el === eqs[0] ? 'afterbegin' : 'beforeend', `<span class="fg-roja">${'<i></i>'.repeat(n)}</span>`); });
+  [[eqs[0], r.rL], [eqs[1], r.rV]].forEach(([el, n]) => { if (el && n && !el.querySelector('.fg-roja')) el.insertAdjacentHTML(el === eqs[0] ? 'beforeend' : 'afterbegin', `<span class="fg-roja">${'<i></i>'.repeat(n)}</span>`); });
 }
 let buscandoGoles = false;
 function completarGolesFilas() {
@@ -3929,7 +3945,6 @@ async function vistaPartido(id) {
       <div class="lado"><span class="esc-rojas">${escudo(p.local)}${rojas(p.local.id)}</span>${esc(p.local.nombre)}</div>
       <div><div class="res">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</div><div class="estado ${p.vivo ? 'vivo' : ''}">${esc(estado)}</div></div>
       <div class="lado"><span class="esc-rojas">${escudo(p.visitante)}${rojas(p.visitante.id)}</span>${esc(p.visitante.nombre)}</div>
-      ${gL || gV ? `<div class="goles-m izq">${gL}</div><div class="goles-m pelota">${gL || gV ? '⚽' : ''}</div><div class="goles-m der">${gV}</div>` : ''}
     </section>
     ${pest.length > 1 ? `<div class="pestanas" role="tablist">${pest.map(([t], i) => `<button role="tab" data-p="${i}" class="${i === 0 ? 'on' : ''}">${t}</button>`).join('')}</div>` : ''}
     <main id="panel"></main>`;
@@ -4046,13 +4061,13 @@ async function cargarStats(p) {
 
 /* Minuto a minuto: línea de tiempo en el medio, cada equipo de su lado */
 const ICO = {
-  gol: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fff"/><path d="M12 7.2l3.3 2.4-1.3 3.9h-4l-1.3-3.9z" fill="#0B1220"/><path d="M12 2v5.2M15.3 9.6l4.6-1.6M14 13.5l2.8 4.2M10 13.5l-2.8 4.2M8.7 9.6L4.1 8" stroke="#0B1220" stroke-width="1.3"/></svg>',
+  gol: '<span class="mm2-emo">⚽</span>',
   amarilla: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#F5C400"/></svg>',
   roja: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#FF3B3B"/></svg>',
   doble: '<svg viewBox="0 0 24 24"><rect x="4.5" y="3" width="9" height="15" rx="2" fill="#F5C400"/><rect x="10.5" y="6" width="9" height="15" rx="2" fill="#FF3B3B"/></svg>',
   cambio: '<svg viewBox="0 0 24 24"><path d="M8 20V6m0 0l-3.5 3.5M8 6l3.5 3.5" stroke="#E6EBF2" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M16 4v14m0 0l-3.5-3.5M16 18l3.5-3.5" stroke="#7F8CA3" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg>',
   lesion: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#C7D2E0" stroke-width="1.8"/><path d="M10.5 6.5h3v4h4v3h-4v4h-3v-4h-4v-3h4z" fill="#C7D2E0"/></svg>',
-  palo: '<svg viewBox="0 0 24 24"><path d="M3 21V5h12v16" fill="none" stroke="#EEF2F7" stroke-width="2.2"/><circle cx="17" cy="7" r="4" fill="#fff" stroke="#0B1220" stroke-width="1.2"/></svg>',
+  palo: '<span class="mm2-palo"><svg viewBox="0 0 38 24"><g stroke="#55637A" stroke-width=".8"><path d="M4.5 10h19M4.5 14h19M4.5 18h19M8 6.5v14.5M12 6.5v14.5M16 6.5v14.5M20 6.5v14.5"/></g><path d="M2.5 22V5.2h22.6V22" fill="none" stroke="#F2F5F9" stroke-width="2.6" stroke-linejoin="round"/></svg><i>⚽</i></span>',
   errado: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#C7D2E0" stroke-width="1.8"/><path d="M8 8l8 8M16 8l-8 8" stroke="#C7D2E0" stroke-width="2" stroke-linecap="round"/></svg>',
   var: '<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3" fill="#EEF2F7"/><text x="12" y="15.5" text-anchor="middle" font-family="Inter,sans-serif" font-size="8" font-weight="900" fill="#0B1220">VAR</text></svg>',
   otro: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#8E9AAE"/></svg>'
@@ -4067,7 +4082,7 @@ function describirEvento(e) {
   if (esAmarilla(t)) return { ic: ICO.amarilla, tit: 'Tarjeta amarilla', nom: e.jugador };
   if (esCambio(t)) return { ic: ICO.cambio, tit: 'Cambio', entra: e.jugador, sale: e.sale };
   if (esLesion(t)) return { ic: ICO.lesion, tit: 'Lesión', nom: e.jugador };
-  if (esPalo(t)) return { ic: ICO.palo, tit: 'Pelota en el palo', nom: e.jugador };
+  if (esPalo(t)) return { ic: ICO.palo, tit: 'Tiro al palo', nom: e.jugador };
   return { ic: ICO.otro, tit: t, nom: e.jugador };
 }
 function panelMinuto(p) {
