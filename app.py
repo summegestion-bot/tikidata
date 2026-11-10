@@ -3298,20 +3298,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .sup .num { flex:none; width:32px; height:32px; border-radius:16px; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:13px; background:#16233B; border:2px solid var(--c); color:var(--texto); }
 .sup .n { flex:1; min-width:0; font-weight:700; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .sup .sup-pos { font-size:11px; font-weight:800; padding:3px 8px; border-radius:999px; color:var(--c); background:rgba(255,255,255,.05); white-space:nowrap; }
-.cmp-slots { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
-.cmp-slot { display:flex; align-items:center; gap:8px; padding:10px; border-radius:14px; background:var(--sup); border:2px solid transparent; text-align:left; min-width:0; }
-.punto-on { display:inline-block; width:7px; height:7px; border-radius:4px; background:var(--cs); margin-left:4px; vertical-align:1px; animation:titila 1.2s infinite; }
 @keyframes titila { 50% { opacity:.25; } }
-.cmp-slot.activo { border-color:var(--cs); box-shadow:0 0 0 3px rgba(79,143,247,.15); }
-.cmp-slot small { display:block; font-size:10px; font-weight:800; letter-spacing:.6px; color:var(--cs); }
-.cmp-slot b { display:block; font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.cmp-fila { width:100%; display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:10px; padding:10px 12px; border:0; border-top:1px solid var(--linea); background:transparent; text-align:left; }
-.cmp-fila.elegido { background:rgba(18,58,115,.35); }
-.cmp-fila b { display:block; font-size:14px; } .cmp-fila small { color:var(--suave); font-size:12px; }
-.cmp-fila .esc img, .cmp-slot .esc img { width:26px; height:26px; object-fit:contain; display:block; }
-.cmp-pill { font-size:12px; font-weight:800; padding:6px 12px; border-radius:999px; white-space:nowrap; }
-.cmp-pill.si { background:#123A73; color:#EAF2FF; }
-.cmp-pill.no { background:#8FC9F0; color:#06233F; }
 .nom-slot { font-size:11px; font-weight:700; background:rgba(5,7,13,.75); padding:1px 6px; border-radius:4px; max-width:76px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .creditos { margin:10px 10px 0; padding:22px 12px 26px; border-top:1px solid var(--linea); display:flex; flex-direction:column; align-items:center; gap:8px; text-align:center; }
 .creditos img { width:48px; height:48px; border-radius:10px; object-fit:cover; opacity:.9; }
@@ -3540,7 +3527,6 @@ function armarMenu() {
   let h = `<div class="grupo">
     <a class="item" href="#/">${svg(ICON.inicio,20)}Inicio</a>
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
-    <a class="item" href="#/jugadores">${svg(ICON.jug,20)}Estadísticas de jugadores</a>
     <a class="item" href="#/favoritos">${svg(ICON.estrella,20)}Mis favoritos</a>
     <a class="item" href="#/favoritos"><span style="width:20px;text-align:center">🔔</span>Avisos de gol en vivo</a>
     <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
@@ -3559,7 +3545,7 @@ $('menuLigas').addEventListener('click', e => { if (e.target.closest('a')) cerra
 
 function navAbajo(actual) {
   const t = [['inicio','#/','Inicio',ICON.inicio], ['calendario','#/calendario','Calendario',ICON.cal],
-             ['favoritos','#/favoritos','Favoritos',ICON.estrella], ['jugadores','#/jugadores','Jugadores',ICON.jug]];
+             ['favoritos','#/favoritos','Favoritos',ICON.estrella]];
   $('navAbajo').innerHTML = t.map(([k, href, l, ic]) => `<a href="${href}" class="${k === actual ? 'on' : ''}">${svg(ic)}${l}</a>`).join('')
     + `<button id="navLigas">${svg(ICON.menu)}Ligas</button>`;
   $('navLigas').onclick = abrirMenu;
@@ -4283,21 +4269,15 @@ function listaGoleadores(d, cod, contenedor) {
 }
 let ligaJug = LIGAS.LPF ? 'LPF' : 'PD';
 function ligasGol() { return CON_GOL.filter(c => LIGAS[c]).concat(Object.keys(LIGAS).filter(c => !HL.includes(c))); }
-async function vistaJugadores() {
-  $('vista').innerHTML = volver('Estadísticas de jugadores') + `<main><div class="chips">${ligasGol().map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
-    <a class="boton sec" href="#/comparar">Comparar dos jugadores</a><div id="lista"><div class="cargando">Cargando…</div></div></main>`;
-  document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaJug = b.dataset.l; vistaJugadores(); });
-  try { $('lista').innerHTML = listaGoleadores(await goleadores(ligaJug), ligaJug); cargarFotos($('lista')); } catch (e) { $('lista').innerHTML = error(e); }
-}
 function edad(n) { if (!n) return '-'; const d = new Date(n), h = new Date(); let a = h.getFullYear() - d.getFullYear(); if (h < new Date(h.getFullYear(), d.getMonth(), d.getDate())) a--; return a + ' años'; }
 const POS = { Offence:'Delantero', Midfield:'Mediocampista', Defence:'Defensor', Goalkeeper:'Arquero' };
 async function vistaJugador(cod, id) {
-  $('vista').innerHTML = volver('Jugador', '#/jugadores') + '<div class="cargando">Cargando…</div>';
+  $('vista').innerHTML = volver('Jugador', 'javascript:history.back()') + '<div class="cargando">Cargando…</div>';
   let d; try { d = await goleadores(cod); } catch (e) { $('vista').innerHTML = volver('Jugador') + `<main>${error(e)}</main>`; return; }
   const j = [...d.goleadores, ...(d.asistidores || []), ...(d.amarillas || []), ...(d.rojas || [])].find(x => String(x.id) === String(id));
   if (!j) { $('vista').innerHTML = volver('Jugador') + '<main><div class="tarjeta aviso">No encontramos al jugador.</div></main>'; return; }
   const gpp = j.partidos ? (j.goles / j.partidos).toFixed(2).replace('.', ',') : '-';
-  $('vista').innerHTML = volver('Jugador', '#/jugadores') + `<section style="background:var(--negro);padding:6px 16px 18px;border-bottom:1px solid var(--linea);display:flex;flex-direction:column;gap:16px">
+  $('vista').innerHTML = volver('Jugador', 'javascript:history.back()') + `<section style="background:var(--negro);padding:6px 16px 18px;border-bottom:1px solid var(--linea);display:flex;flex-direction:column;gap:16px">
       <div style="display:flex;align-items:center;gap:14px">${caraHTML(j, 'avatar xl')}
         <div style="display:flex;flex-direction:column;gap:6px"><b class="titulo" style="font-size:22px">${esc(j.nombre)}</b>
         <span style="display:flex;align-items:center;gap:8px;font-weight:600">${escudo(j.equipo)}${esc(j.equipo.nombre)}</span></div></div>
@@ -4305,48 +4285,9 @@ async function vistaJugador(cod, id) {
     <main><section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">${esc(d.nombre)} · temporada actual</h2>
       <div class="datos3"><div><small>Goles</small><b>${j.goles}</b></div><div><small>Asistencias</small><b>${j.asistencias}</b></div><div><small>Partidos</small><b>${j.partidos}</b></div>
       <div><small>Penales</small><b>${j.penales}</b></div><div><small>Goles por partido</small><b>${gpp}</b></div><div><small>Ranking</small><b>${d.goleadores.indexOf(j) >= 0 ? (d.goleadores.indexOf(j) + 1) + "º" : "-"}</b></div></div></section>
-      <a class="boton" href="#/comparar/${cod}/${j.id}">Comparar con otro jugador</a>
       <div id="extra" style="display:flex;flex-direction:column;gap:14px"><div class="cargando">Buscando foto y trayectoria…</div></div></main>`;
   bloqueJugadorExtra(j.nombre, 'extra');
 }
-async function vistaComparar(cod, idA) {
-  cod = cod || ligaJug;
-  $('vista').innerHTML = volver('Comparar jugadores', '#/jugadores') + '<div class="cargando">Cargando…</div>';
-  let d; try { d = await goleadores(cod); } catch (e) { $('vista').innerHTML = volver('Comparar') + `<main>${error(e)}</main>`; return; }
-  const lista = d.goleadores;
-  if (lista.length < 2) { $('vista').innerHTML = volver('Comparar') + '<main><div class="tarjeta aviso">No hay suficientes jugadores.</div></main>'; return; }
-  let a = lista.find(x => String(x.id) === String(idA)) || lista[0];
-  let b = lista.find(x => x !== a);
-  let activo = 'b';
-  const COL = { a: 'var(--plata)', b: '#FF9F43' };
-  const dibujar = () => {
-    const filas = [['Goles','goles'], ['Asistencias','asistencias'], ['Partidos','partidos'], ['Penales','penales'], ['Goles por partido', null]].map(([n, k]) => {
-      const va = k ? a[k] : (a.partidos ? a.goles / a.partidos : 0), vb = k ? b[k] : (b.partidos ? b.goles / b.partidos : 0);
-      const t = (va + vb) || 1, f = (v) => k ? v : v.toFixed(2).replace('.', ',');
-      return `<div style="padding:12px 0;border-bottom:1px solid var(--linea)"><div style="display:grid;grid-template-columns:60px 1fr 60px;font-size:14px">
-        <b style="${va >= vb ? '' : 'font-weight:500;color:var(--suave)'}">${f(va)}</b><span style="text-align:center;font-size:12px;color:var(--suave)">${n}</span><b style="text-align:right;${vb >= va ? '' : 'font-weight:500;color:var(--suave)'}">${f(vb)}</b></div>
-        <div class="barra"><div><i style="width:${Math.round(va / t * 100)}%;background:var(--plata)"></i></div><div><i style="width:${Math.round(vb / t * 100)}%;background:#FF9F43"></i></div></div></div>`;
-    }).join('');
-    const slot = (k, x) => `<button class="cmp-slot ${activo === k ? 'activo' : ''}" data-slot="${k}" style="--cs:${COL[k]}"><span class="esc">${escImg(x.equipo)}</span><span style="min-width:0"><small>JUGADOR ${k === 'a' ? 1 : 2}${activo === k ? ' <i class="punto-on"></i>' : ''}</small><b>${esc(x.nombre)}</b></span></button>`;
-    $('cuerpo').innerHTML = `<div class="cmp-slots">${slot('a', a)}${slot('b', b)}</div>
-      <section class="tarjeta pad">${filas}</section>
-      <section class="tarjeta"><div class="cab"><div class="t"><b>Elegí el jugador ${activo === 'a' ? 1 : 2}</b><small>Tocá un jugador de la lista</small></div></div>
-        ${lista.map(x => { const es = x === a ? 1 : x === b ? 2 : 0;
-          return `<button class="cmp-fila ${es ? 'elegido' : ''}" data-id="${x.id}"><span class="esc">${escImg(x.equipo)}</span><span style="min-width:0"><b>${esc(x.nombre)}</b><small>${esc(x.equipo.nombre)} · ${x.goles} goles</small></span>
-            <span class="cmp-pill ${es ? 'si' : 'no'}">${es ? 'Jugador ' + es : 'Elegir'}</span></button>`; }).join('')}</section>`;
-    document.querySelectorAll('[data-slot]').forEach(el => el.onclick = () => { activo = el.dataset.slot; dibujar(); });
-    document.querySelectorAll('.cmp-fila').forEach(el => el.onclick = () => {
-      const x = lista.find(y => String(y.id) === el.dataset.id);
-      if (activo === 'a') { if (x === b) b = a; a = x; activo = 'b'; } else { if (x === a) a = b; b = x; activo = 'a'; }
-      dibujar(); window.scrollTo({ top: 0, behavior: 'smooth' });
-    });
-  };
-  $('vista').innerHTML = volver('Comparar jugadores', '#/jugadores') + `<main>
-    <div class="chips">${ligasGol().map(c => `<a class="chip ${c === cod ? 'on' : ''}" href="#/comparar/${c}">${esc(LIGAS[c][0])}</a>`).join('')}</div>
-    <div id="cuerpo" style="display:flex;flex-direction:column;gap:12px"></div></main>`;
-  dibujar();
-}
-
 /* ---------- Favoritos ---------- */
 let ligaFav = 'PD';
 async function vistaFavoritos() {
@@ -4571,16 +4512,14 @@ function ruta() {
   cerrarMenu();
   if (trivia && v !== 'trivia') { clearInterval(trivia.reloj); trivia = null; }
   window.scrollTo(0, 0);
-  const nav = { '': 'inicio', dia: 'inicio', calendario: 'calendario', favoritos: 'favoritos', jugadores: 'jugadores', jugador: 'jugadores', comparar: 'jugadores', ficha: 'jugadores' };
+  const nav = { '': 'inicio', dia: 'inicio', calendario: 'calendario', favoritos: 'favoritos', jugador: '', ficha: '' };
   navAbajo(nav[v || ''] || '');
   if (!v) return vistaInicio();
   if (v === 'dia') return vistaInicio(a);
   if (v === 'partido') return vistaPartido(a);
   if (v === 'liga' && LIGAS[a]) return vistaLiga(a, b);
   if (v === 'calendario') return vistaCalendario();
-  if (v === 'jugadores') return vistaJugadores();
   if (v === 'jugador') return vistaJugador(a, b);
-  if (v === 'comparar') return vistaComparar(a, b);
   if (v === 'favoritos') return vistaFavoritos();
   if (v === 'envivo') return vistaEnVivo(a);
   if (v === 'trivia') return vistaTrivia();
