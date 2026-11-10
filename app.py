@@ -419,7 +419,8 @@ def datos_tabla(liga):
     return {"liga": liga, "nombre": LIGAS[liga][0], "grupos": grupos}
 
 
-GOLEADORES_HL = ("LPF", "LIB", "SUD", "CAR", "PNA")   # torneos donde se cuentan los goles partido por partido
+GOLEADORES_HL = ("LPF", "LIB", "SUD", "CAR", "PNA")
+GOL_POR_VUELTA = 120   # partidos nuevos que se piden, como mucho, cada vez que se recalculan los goleadores de un torneo   # torneos donde se cuentan los goles partido por partido
 _goleadores = {}
 _goleadores_candado = threading.Lock()
 
@@ -440,14 +441,24 @@ def calcular_goleadores_hl(cod):
     jugados, titulo = _torneo_actual(jugados)
     tabla = {}
 
+    # Cada partido se pide una sola vez y queda guardado. Los que faltan se piden de a poco
+    # (como mucho GOL_POR_VUELTA por vuelta) y solo si sobra cupo, así no se gastan los pedidos del día.
+    restantes = _hl["restantes"] if _hl["restantes"] is not None else HL_LIMITE - _hl["usados"]
+    hay_cupo = restantes > (_hl["limite"] or HL_LIMITE) * 0.4
+    nuevos = {"n": 0}
+
     def detalle(p):
+        ruta = f"/matches/{p['id'][1:]}"
+        if ("hl" + ruta + "{}") not in _memoria:
+            if not hay_cupo or nuevos["n"] >= GOL_POR_VUELTA:
+                return p, None
+            nuevos["n"] += 1
         try:
-            return p, hl(f"/matches/{p['id'][1:]}", ttl=60 * 86400)
+            return p, hl(ruta, ttl=60 * 86400)
         except Exception:
             return p, None
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(6) as ex:
-        detalles = list(ex.map(detalle, jugados))
+    jugados = sorted(jugados, key=lambda p: p.get("fecha") or "", reverse=True)  # primero los más nuevos
+    detalles = [detalle(p) for p in jugados]
     for p, d in detalles:
         if d is None:
             continue
@@ -506,7 +517,8 @@ def goleadores_al_arrancar():
     while True:
         for c in GOLEADORES_HL:
             _actualizar_goleadores(c)
-        time.sleep(3 * 3600)
+            time.sleep(60)
+        time.sleep(2 * 3600)  # cada 2 horas: suma los partidos nuevos (y los que faltaron, de a poco)
 
 
 def datos_goleadores(liga):
@@ -1258,7 +1270,7 @@ def _crudo_fd(id_num):
 def resumen_goles(id_txt):
     """Quién hizo los goles y cuántas rojas tuvo cada equipo, para mostrarlo en la lista de partidos."""
     if id_txt.startswith("h"):
-        d = datos_partido_hl(id_txt[1:])
+        d = datos_partido_hl(id_txt[1:], ligero=True)
         loc = d["local"]["id"]
     else:
         crudo = _crudo_fd(id_txt)
@@ -1266,7 +1278,7 @@ def resumen_goles(id_txt):
         if not enc:
             return None
         hid, inv = enc
-        d = datos_partido_hl(str(hid))
+        d = datos_partido_hl(str(hid), ligero=True)
         loc = d["visitante"]["id"] if inv else d["local"]["id"]
     goles = [[g["minuto"], g["jugador"], "L" if g["equipo"] == loc else "V", g["tipo"]] for g in d.get("goles", []) if g.get("jugador")]
     rojas = {"L": 0, "V": 0}
@@ -1338,7 +1350,7 @@ def datos_jugadores_partido(id_num):
     return {"jugadores": res}
 
 
-def datos_partido_hl(id_num):
+def datos_partido_hl(id_num, ligero=False):
     clave = "hl" + f"/matches/{id_num}" + "{}"
     previo = _memoria.get(clave)
     ttl = 0
@@ -1379,6 +1391,9 @@ def datos_partido_hl(id_num):
     res["historial"] = None
     res["fuente"] = "hl"
     res["alineacion"] = None
+    if ligero:  # para la lista de partidos alcanza con goles y tarjetas (no se piden formaciones ni puntajes)
+        res.pop("_inicio", None)
+        return res
     if p["vivo"] or p["terminado"] or (p["_inicio"] - time.time() < 3600):
         try:
             al = hl(f"/lineups/{id_num}", ttl=86400 if p["terminado"] else 900)
@@ -3243,6 +3258,9 @@ nav.abajo .on { color:var(--azul); }
 .avatar.xl.pos-av { font-size:24px; }
 .silueta { width:80%; height:80%; margin-bottom:-2px; opacity:.85; }
 .avatar { width:40px; height:40px; border-radius:20px; background:#1B2E4F; color:#6F86A8; overflow:hidden; align-items:flex-end !important; font-weight:800; font-size:13px; display:flex; align-items:center; justify-content:center; }
+.esc-jug { width:40px; height:40px; display:flex; align-items:center; justify-content:center; flex:none; }
+.esc-jug .esc { width:34px !important; height:34px !important; object-fit:contain; font-size:11px; }
+.esc-jug.xl { width:84px; height:84px; } .esc-jug.xl .esc { width:72px !important; height:72px !important; font-size:20px; }
 .avatar.xl { width:84px; height:84px; border-radius:42px; font-size:26px; }
 .goles { font-family:Montserrat, sans-serif; font-weight:900; font-size:18px; }
 .datos3 { display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:8px; }
@@ -4338,8 +4356,8 @@ function listaGoleadores(d, cod, contenedor) {
     STAT_TIPO = b.dataset.stat; const el = b.closest('.stats-jug'); if (el) el.outerHTML = listaGoleadores(d, cod); }), 0);
   return `<div class="stats-jug"><div class="chips" style="margin-bottom:10px">${hay.map(([x, nom]) => `<button class="chip ${x === k ? 'on' : ''}" data-stat="${x}">${nom}</button>`).join('')}</div>
     <section class="tarjeta">${d[k].map((j, i) => `<a class="jug" href="#/jugador/${cod}/${j.id}">
-    <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span>${caraHTML(j)}
-    <span style="min-width:0"><b class="nom" style="display:block;font-size:14px">${esc(j.nombre)}</b><small style="color:var(--suave);display:flex;align-items:center;gap:6px">${escudo(j.equipo)}${esc(j.equipo.nombre)}</small></span>
+    <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span><span class="esc-jug">${escudo(j.equipo, 'esc')}</span>
+    <span style="min-width:0"><b class="nom" style="display:block;font-size:14px">${esc(j.nombre)}</b><small style="color:var(--suave);display:block">${esc(j.equipo.nombre)}</small></span>
     <span style="text-align:right"><span class="goles">${icono} ${j[campo]}</span><br><small style="color:var(--suave)">${unidad}</small></span></a>`).join('')}</section></div>`;
 }
 let ligaJug = LIGAS.LPF ? 'LPF' : 'PD';
@@ -4353,9 +4371,9 @@ async function vistaJugador(cod, id) {
   if (!j) { $('vista').innerHTML = volver('Jugador') + '<main><div class="tarjeta aviso">No encontramos al jugador.</div></main>'; return; }
   const gpp = j.partidos ? (j.goles / j.partidos).toFixed(2).replace('.', ',') : '-';
   $('vista').innerHTML = volver('Jugador', 'javascript:history.back()') + `<section style="background:var(--negro);padding:6px 16px 18px;border-bottom:1px solid var(--linea);display:flex;flex-direction:column;gap:16px">
-      <div style="display:flex;align-items:center;gap:14px">${caraHTML(j, 'avatar xl')}
+      <div style="display:flex;align-items:center;gap:14px"><span class="esc-jug xl">${escudo(j.equipo, 'esc')}</span>
         <div style="display:flex;flex-direction:column;gap:6px"><b class="titulo" style="font-size:22px">${esc(j.nombre)}</b>
-        <span style="display:flex;align-items:center;gap:8px;font-weight:600">${escudo(j.equipo)}${esc(j.equipo.nombre)}</span></div></div>
+        <span style="font-weight:600">${esc(j.equipo.nombre)}</span></div></div>
       <div class="datos3"><div><small>Nacionalidad</small><b>${esc(j.nacionalidad || '-')}</b></div><div><small>Edad</small><b>${edad(j.nacimiento)}</b></div><div><small>Posición</small><b>${esc(POS[j.posicion] || j.posicion || '-')}</b></div></div></section>
     <main><section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">${esc(d.nombre)} · temporada actual</h2>
       <div class="datos3"><div><small>Goles</small><b>${j.goles}</b></div><div><small>Asistencias</small><b>${j.asistencias}</b></div><div><small>Partidos</small><b>${j.partidos}</b></div>
