@@ -255,7 +255,7 @@ def datos_calendario_mes(anio, mes):
 
 def hoy_rapido(fecha):
     es_hoy = fecha == datetime.now(ARG).strftime("%Y-%m-%d")
-    return rapido("hoy" + fecha, lambda: datos_hoy(fecha), 25 if es_hoy else 600)
+    return rapido("hoy" + fecha, lambda: datos_hoy(fecha), 10 if es_hoy else 600)
 
 
 def calendario_rapido(liga):
@@ -907,8 +907,8 @@ def en_ventana(p, ahora=None):
 
 
 # Prioridades: cuánto más seguido se actualiza cada uno, comparado con Boca (1 = el más rápido)
-PRIORIDAD = {"boca": 1.0, "river": 1.0, "LPF": 2.0, "otros": 2.0}
-MINIMO = {"boca": 1, "river": 1, "LPF": 2, "otros": 2}       # minutos mínimos entre consultas (plan PRO)
+PRIORIDAD = {"boca": 1.0, "river": 1.0, "LPF": 1.0, "otros": 1.5}
+MINIMO = {"boca": 1, "river": 1, "LPF": 1, "otros": 1}       # minutos mínimos entre consultas (plan PRO)
 EQUIPOS_PRIORIDAD = {"boca": " boca juniors ", "river": " river plate "}
 
 
@@ -3605,11 +3605,11 @@ async function pintarHoy(fecha, deNuevo) {
   try {
     const d = deNuevo ? await pedirDeVerdad('/api/hoy?fecha=' + fecha) : await pedir('/api/hoy?fecha=' + fecha);
     if (location.hash !== hashAntes || !$('ligasHoy')) return;  // ya se fue a otra pantalla
-    // mientras haya partidos jugándose (o por empezar en la próxima hora), se vuelve a pedir cada 40 segundos
+    // mientras haya partidos jugándose (o por empezar en la próxima hora), se vuelve a pedir cada 20 segundos
     const ahoraMin = new Date().getHours() * 60 + new Date().getMinutes();
     const porEmpezar = (p) => !p.terminado && !p.vivo && p.hora && /^\d\d:\d\d$/.test(p.hora) && (() => { const m = +p.hora.slice(0,2) * 60 + +p.hora.slice(3); return m - ahoraMin <= 60 && ahoraMin - m <= 150; })();
     const activos = fecha === hoyISO() && d.grupos.some(g => g.partidos.some(p => p.vivo || porEmpezar(p)));
-    if (activos) timerHoy = setTimeout(() => { if (location.hash === hashAntes && document.visibilityState === 'visible') pintarHoy(fecha, true); else if (location.hash === hashAntes) document.addEventListener('visibilitychange', function f() { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); if (location.hash === hashAntes) pintarHoy(fecha, true); } }); }, 40000);
+    if (activos) timerHoy = setTimeout(() => { if (location.hash === hashAntes && document.visibilityState === 'visible') pintarHoy(fecha, true); else if (location.hash === hashAntes) document.addEventListener('visibilitychange', function f() { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); if (location.hash === hashAntes) pintarHoy(fecha, true); } }); }, 20000);
     // si cambió el resultado, se vuelven a buscar los goleadores de ese partido
     d.grupos.forEach(g => g.partidos.forEach(p => { const k = p.gl + '-' + p.gv; if (MARC_PREV[p.id] && MARC_PREV[p.id] !== k) delete RES_GOLES[p.id]; MARC_PREV[p.id] = k; }));
     const todos = d.grupos.flatMap(g => g.partidos);
@@ -3630,7 +3630,7 @@ async function pintarHoy(fecha, deNuevo) {
         <a class="cab" href="#/liga/${g.liga}">${g.emblema ? `<img class="emb" src="${esc(g.emblema)}" alt="">` : ''}<div class="t"><b>${esc(g.nombre)}</b><small>${esc(g.region)}</small></div>${svg(ICON.sig,16)}</a>
         ${g.partidos.map(p => filaPartido(p)).join('')}</section>`).join('')
       : `<div class="tarjeta aviso">No hay partidos de las ligas disponibles este día.<br><a class="link" href="#/calendario">Ver el calendario</a></div>`;
-  } catch (e) { if (!deNuevo && $('ligasHoy')) $('ligasHoy').innerHTML = error(e); else if (deNuevo) timerHoy = setTimeout(() => { if (location.hash === hashAntes) pintarHoy(fecha, true); }, 40000); }
+  } catch (e) { if (!deNuevo && $('ligasHoy')) $('ligasHoy').innerHTML = error(e); else if (deNuevo) timerHoy = setTimeout(() => { if (location.hash === hashAntes) pintarHoy(fecha, true); }, 20000); }
 }
 async function cargarProximosFavs(favs) {
   const filas = [];
@@ -3954,14 +3954,14 @@ async function vistaPartido(id, pestana, deNuevo) {
   if (!deNuevo) $('vista').innerHTML = volver('Partido') + '<div class="cargando">Cargando partido…</div>';
   let p;
   try { p = deNuevo ? await pedirDeVerdad('/api/partido?id=' + id) : await pedir('/api/partido?id=' + id); }
-  catch (e) { if (deNuevo) { timerPartido = setTimeout(() => { if (location.hash === hashAntes) vistaPartido(id, pestana, true); }, 45000); return; } $('vista').innerHTML = volver('Partido') + `<main>${error(e)}</main>`; return; }
+  catch (e) { if (deNuevo) { timerPartido = setTimeout(() => { if (location.hash === hashAntes) vistaPartido(id, pestana, true); }, 25000); return; } $('vista').innerHTML = volver('Partido') + `<main>${error(e)}</main>`; return; }
   if (location.hash !== hashAntes) return;
   const scrollAntes = window.scrollY;
-  // en vivo: se actualiza solo cada 45 segundos, sin cambiar de pestaña
+  // en vivo: se actualiza solo cada 25 segundos, sin cambiar de pestaña
   if (p.vivo) timerPartido = setTimeout(() => {
     const otra = () => { if (location.hash !== hashAntes) return; const on = document.querySelector('.pestanas button.on'); vistaPartido(id, on ? on.textContent : pestana, true); };
     if (document.visibilityState === 'visible') otra(); else document.addEventListener('visibilitychange', function f() { if (document.visibilityState === 'visible') { document.removeEventListener('visibilitychange', f); otra(); } });
-  }, 45000);
+  }, 25000);
   const jugado = p.gl !== null && p.gl !== undefined;
   const d = new Date(p.fecha + 'T12:00:00');
   const fechaTxt = `${DIAS_L[d.getDay()]} ${d.getDate()} de ${MESES_L[d.getMonth()]} · ${p.hora}`;
