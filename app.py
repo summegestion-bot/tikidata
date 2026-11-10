@@ -306,8 +306,14 @@ def datos_hoy(fecha):
                 grupos_hl.append({"liga": cod, "nombre": HL_LIGAS[cod][0], "region": HL_LIGAS[cod][1],
                                   "emblema": ps[0]["ligaEmblema"], "partidos": [{k: v for k, v in p.items() if k != "_inicio"} for p in ps]})
     res = datos_hoy_fd(fecha)
-    res["grupos"] = grupos_hl + res["grupos"]
+    res["grupos"] = sorted(grupos_hl + res["grupos"], key=lambda g: ORDEN_LIGAS.index(g["liga"]) if g["liga"] in ORDEN_LIGAS else 99)
     return res
+
+
+# Orden de importancia (igual que el menú): primero lo argentino y las copas, después Europa, las 5 grandes, el ascenso y el resto
+ORDEN_LIGAS = ["LPF", "LIB", "SUD", "CAR", "CL", "UEL", "UECL", "PL", "PD", "BL1", "SA", "FL1", "PNA", "BSA", "PPL", "DED", "ELC", "MLS", "LMX",
+               "URU", "CHI", "COL", "PAR", "PER", "ECU", "BOL", "VEN", "SAU", "FAC", "CDR", "CIT", "DFB", "CDF", "TDC", "SCA", "FEDA", "PRC", "PRD",
+               "WC", "CAM", "EURO"]
 
 
 def datos_hoy_fd(fecha):
@@ -339,7 +345,24 @@ def datos_calendario(liga):
     return {"liga": liga, "nombre": LIGAS[liga][0], "emblema": comp.get("emblem", ""), "partidos": lista}
 
 
+def colores_equipo(eq, liga):
+    try:
+        k = camisetas_pixel([eq["nombre"]], liga in ("LPF", "CAR", "PNA", "FEDA", "PRC", "PRD", "TDC", "SCA"))
+        pix = k[0]["pix"] if k else {}
+        return {"c1": pix.get("c1") or "#2F6BDB", "c2": pix.get("c2") or "#FFFFFF"}
+    except Exception:
+        return {"c1": "#2F6BDB", "c2": "#FFFFFF"}
+
+
 def datos_partido(id_partido):
+    r = _datos_partido(id_partido)
+    r["colores"] = {"local": colores_equipo(r["local"], r.get("liga")), "visitante": colores_equipo(r["visitante"], r.get("liga"))}
+    if r["colores"]["local"]["c1"].lower() == r["colores"]["visitante"]["c1"].lower():
+        r["colores"]["visitante"] = {"c1": r["colores"]["visitante"]["c2"], "c2": r["colores"]["visitante"]["c1"]}
+    return r
+
+
+def _datos_partido(id_partido):
     if str(id_partido).startswith("h"):
         return datos_partido_hl(str(id_partido)[1:])
     p = api(f"/matches/{id_partido}", ttl=60)
@@ -388,7 +411,7 @@ def datos_tabla(liga):
     return {"liga": liga, "nombre": LIGAS[liga][0], "grupos": grupos}
 
 
-GOLEADORES_HL = ("LPF",)   # torneos donde se cuentan los goles partido por partido
+GOLEADORES_HL = ("LPF", "LIB", "SUD", "CAR", "PNA")   # torneos donde se cuentan los goles partido por partido
 _goleadores = {}
 _goleadores_candado = threading.Lock()
 
@@ -422,26 +445,38 @@ def calcular_goleadores_hl(cod):
             continue
         m = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
         equipos = {str((m.get(k) or {}).get("id")): _equipo_hl(m.get(k)) for k in ("homeTeam", "awayTeam")}
-        en_cancha = set()
+        def fila(nombre, eq):
+            return tabla.setdefault((nombre, eq["id"]), {"nombre": nombre, "equipo": eq, "goles": 0, "asistencias": 0, "penales": 0,
+                                                         "amarillas": 0, "rojas": 0, "partidos": set()})
         for e in m.get("events") or []:
-            tipo, jug = e.get("type") or "", (e.get("player") or "").strip()
+            tipo = e.get("type") or ""
+            jug = e.get("player")
+            jug = ((jug.get("name") if isinstance(jug, dict) else jug) or "").strip()
+            if _desconocido(jug):
+                jug = ""
             eq = equipos.get(str((e.get("team") or {}).get("id"))) or {"id": None, "nombre": "", "escudo": "", "sigla": ""}
             if jug and tipo in ("Goal", "Penalty"):
-                f = tabla.setdefault((jug, eq["id"]), {"nombre": jug, "equipo": eq, "goles": 0, "asistencias": 0, "penales": 0, "partidos": set()})
+                f = fila(jug, eq)
                 f["goles"] += 1
                 f["penales"] += tipo == "Penalty"
                 f["partidos"].add(p["id"])
+            if jug and tipo == "Yellow Card":
+                fila(jug, eq)["amarillas"] += 1
+            if jug and re.search(r"red card|second yellow|yellow.?red", tipo, re.I):
+                fila(jug, eq)["rojas"] += 1
             asis = (e.get("assist") or "").strip()
-            if asis and tipo == "Goal":
-                f = tabla.setdefault((asis, eq["id"]), {"nombre": asis, "equipo": eq, "goles": 0, "asistencias": 0, "penales": 0, "partidos": set()})
-                f["asistencias"] += 1
-    lista = sorted(tabla.values(), key=lambda f: (-f["goles"], -f["asistencias"], f["nombre"]))
-    lista = [f for f in lista if f["goles"] > 0][:30]
-    for i, f in enumerate(lista):
+            if asis and not _desconocido(asis) and tipo == "Goal":
+                fila(asis, eq)["asistencias"] += 1
+    todos = list(tabla.values())
+    for i, f in enumerate(todos):
         f["id"] = "g" + re.sub(r"[^a-z0-9]", "", normalizar(f["nombre"]))[:20] + str(i)
         f["partidos"] = len(f["partidos"])
         f.update(nacionalidad="", nacimiento="", posicion="")
-    return {"lista": lista, "titulo": titulo, "hora": time.time()}
+
+    def top(campo, desempate):
+        return [f for f in sorted(todos, key=lambda f: (-f[campo], -f[desempate], f["nombre"])) if f[campo] > 0][:30]
+    return {"lista": top("goles", "asistencias"), "asistidores": top("asistencias", "goles"),
+            "amarillas": top("amarillas", "rojas"), "rojas": top("rojas", "amarillas"), "titulo": titulo, "hora": time.time()}
 
 
 def _actualizar_goleadores(cod):
@@ -473,10 +508,11 @@ def datos_goleadores(liga):
             threading.Thread(target=_actualizar_goleadores, args=(liga,), daemon=True).start()
         if not g:
             return {"liga": liga, "nombre": HL_LIGAS[liga][0], "goleadores": [], "calculando": True}
-        return {"liga": liga, "nombre": HL_LIGAS[liga][0] + (" · " + g["titulo"] if g.get("titulo") else ""), "goleadores": g["lista"]}
+        return {"liga": liga, "nombre": HL_LIGAS[liga][0] + (" · " + g["titulo"] if g.get("titulo") else ""), "goleadores": g["lista"],
+                "asistidores": g.get("asistidores", []), "amarillas": g.get("amarillas", []), "rojas": g.get("rojas", [])}
     if liga in HL_LIGAS:
         return {"liga": liga, "nombre": HL_LIGAS[liga][0], "goleadores": []}
-    datos = api(f"/competitions/{liga}/scorers?limit=30", ttl=600)
+    datos = api(f"/competitions/{liga}/scorers?limit=60", ttl=600)
     lista = []
     for s in datos.get("scorers", []):
         j = s.get("player") or {}
@@ -488,7 +524,8 @@ def datos_goleadores(liga):
             "goles": s.get("goals") or 0, "asistencias": s.get("assists") or 0,
             "penales": s.get("penalties") or 0, "partidos": s.get("playedMatches") or 0,
         })
-    return {"liga": liga, "nombre": LIGAS[liga][0], "goleadores": lista}
+    asis = sorted([x for x in lista if x["asistencias"]], key=lambda x: (-x["asistencias"], -x["goles"]))
+    return {"liga": liga, "nombre": LIGAS[liga][0], "goleadores": lista, "asistidores": asis, "amarillas": [], "rojas": []}
 
 
 def datos_equipos(liga):
@@ -1064,6 +1101,169 @@ def _cod_de_partido(id_txt, m=None):
     return next((c for c in HL_LIGAS if _elige(c, nombre_liga)), "LPF")
 
 
+def _desconocido(nombre):
+    n = normalizar(nombre if isinstance(nombre, str) else "").strip()
+    return n in ("", "unknown", "desconocido", "n a", "tbd", "null", "none")
+
+
+def _buscar_puntajes(d):
+    """Puntaje (rating) de cada jugador, buscado en lo que devuelva Highlightly, venga como venga."""
+    puntajes = {}
+
+    def nombre_de(x):
+        for k in ("name", "playerName", "fullName"):
+            if isinstance(x.get(k), str):
+                return x[k]
+        if isinstance(x.get("player"), dict):
+            return nombre_de(x["player"])
+        return ""
+
+    def valor_rating(x):
+        for k in ("rating", "playerRating", "matchRating"):
+            if x.get(k) not in (None, "", "-"):
+                return x[k]
+        for lista in (x.get("statistics"), x.get("stats")):
+            if isinstance(lista, list):
+                for s in lista:
+                    if isinstance(s, dict) and "rating" in str(s.get("name") or s.get("displayName") or s.get("type") or "").lower():
+                        return s.get("value")
+            if isinstance(lista, dict) and lista.get("rating") is not None:
+                return lista["rating"]
+        return None
+
+    def mirar(x, prof=0):
+        if prof > 8:
+            return
+        if isinstance(x, list):
+            for y in x:
+                mirar(y, prof + 1)
+        elif isinstance(x, dict):
+            r, n = valor_rating(x), nombre_de(x)
+            if r is not None and n:
+                try:
+                    v = float(str(r).replace(",", "."))
+                    if 0 < v <= 10:
+                        puntajes[normalizar(n).strip()] = round(v, 1)
+                except ValueError:
+                    pass
+            for v in x.values():
+                if isinstance(v, (list, dict)):
+                    mirar(v, prof + 1)
+    mirar(d)
+    return puntajes
+
+
+BANDERAS = {"argentina": "AR", "brazil": "BR", "brasil": "BR", "uruguay": "UY", "paraguay": "PY", "chile": "CL", "colombia": "CO",
+            "peru": "PE", "ecuador": "EC", "bolivia": "BO", "venezuela": "VE", "mexico": "MX", "united states": "US", "usa": "US",
+            "canada": "CA", "spain": "ES", "espana": "ES", "france": "FR", "germany": "DE", "italy": "IT", "portugal": "PT",
+            "netherlands": "NL", "belgium": "BE", "croatia": "HR", "serbia": "RS", "switzerland": "CH", "austria": "AT",
+            "denmark": "DK", "sweden": "SE", "norway": "NO", "poland": "PL", "czech republic": "CZ", "czechia": "CZ",
+            "turkey": "TR", "turkiye": "TR", "greece": "GR", "ukraine": "UA", "russia": "RU", "morocco": "MA", "senegal": "SN",
+            "nigeria": "NG", "ghana": "GH", "ivory coast": "CI", "cote d ivoire": "CI", "cameroon": "CM", "egypt": "EG",
+            "algeria": "DZ", "tunisia": "TN", "japan": "JP", "south korea": "KR", "korea republic": "KR", "australia": "AU",
+            "saudi arabia": "SA", "ireland": "IE", "scotland": "GB-SCT", "england": "GB-ENG", "wales": "GB-WLS",
+            "northern ireland": "GB", "united kingdom": "GB", "costa rica": "CR", "panama": "PA", "honduras": "HN",
+            "jamaica": "JM", "haiti": "HT", "cuba": "CU", "dominican republic": "DO", "guatemala": "GT", "el salvador": "SV",
+            "slovakia": "SK", "slovenia": "SI", "hungary": "HU", "romania": "RO", "bulgaria": "BG", "finland": "FI",
+            "iceland": "IS", "albania": "AL", "bosnia and herzegovina": "BA", "north macedonia": "MK", "montenegro": "ME",
+            "georgia": "GE", "armenia": "AM", "israel": "IL", "iran": "IR", "qatar": "QA", "china": "CN", "india": "IN",
+            "south africa": "ZA", "mali": "ML", "guinea": "GN", "gabon": "GA", "angola": "AO", "cape verde": "CV",
+            "dr congo": "CD", "congo dr": "CD", "kosovo": "XK", "luxembourg": "LU", "new zealand": "NZ"}
+
+
+def _info_jugador(d):
+    """Nacionalidad, edad, altura y peso de la ficha de un jugador de Highlightly, venga como venga."""
+    x = d[0] if isinstance(d, list) and d else (d if isinstance(d, dict) else {})
+    plano = {}
+
+    def juntar(y, prof=0):
+        if isinstance(y, dict) and prof < 4:
+            for k, v in y.items():
+                if isinstance(v, dict):
+                    juntar(v, prof + 1)
+                elif k not in plano:
+                    plano[k] = v
+    juntar(x)
+    nac = ""
+    for fuente in (x, x.get("profile") if isinstance(x.get("profile"), dict) else {}):
+        for k in ("nationality", "country", "citizenship"):
+            v = fuente.get(k)
+            if isinstance(v, dict):
+                v = v.get("name") or v.get("code") or ""
+            if v and not nac:
+                nac = v
+    nac = nac or plano.get("nationality") or plano.get("citizenship") or ""
+    if isinstance(nac, list):
+        nac = nac[0] if nac else ""
+    edad = plano.get("age")
+    nacimiento = str(plano.get("birthDate") or plano.get("dateOfBirth") or plano.get("birthday") or plano.get("date") or "")[:10]
+    if not edad and re.fullmatch(r"\d{4}-\d{2}-\d{2}", nacimiento):
+        n = date.fromisoformat(nacimiento)
+        hoy = datetime.now(ARG).date()
+        edad = hoy.year - n.year - ((hoy.month, hoy.day) < (n.month, n.day))
+
+    def medida(v, unidad):
+        m = re.search(r"(\d+(?:[.,]\d+)?)", str(v or ""))
+        if not m:
+            return ""
+        num = float(m.group(1).replace(",", "."))
+        if unidad == "m":
+            return f"{num / 100:.2f} m" if num > 3 else f"{num:.2f} m"
+        return f"{round(num)} kg"
+    return {"nacionalidad": nac if isinstance(nac, str) else "", "bandera": BANDERAS.get(normalizar(nac if isinstance(nac, str) else "").strip(), ""),
+            "edad": edad, "altura": medida(plano.get("height"), "m"), "peso": medida(plano.get("weight"), "kg")}
+
+
+def hl_muestra(id_num):
+    """Revisión: un pedacito de lo que devuelve Highlightly para un partido (para ajustar formación, puntajes y fichas)."""
+    def corto(x, n=1500):
+        return json.dumps(x, ensure_ascii=False)[:n]
+    m = hl(f"/matches/{id_num}", ttl=3600)
+    m = m[0] if isinstance(m, list) and m else m
+    al = hl(f"/lineups/{id_num}", ttl=3600)
+    res = {"eventos": corto((m or {}).get("events", [])[:6]), "formacion": corto(al)}
+    try:
+        res["boxScore"] = corto(hl(f"/box-score/{id_num}", ttl=3600))
+    except Exception as e:
+        res["boxScore"] = str(e)
+    a0 = al[0] if isinstance(al, list) and al else al
+    try:
+        j = ((a0 or {}).get("homeTeam") or {}).get("initialLineup")[0][0]
+        pid = j.get("id") or j.get("playerId")
+        res["jugador"] = corto(hl(f"/players/{pid}", ttl=86400)) if pid else "sin id"
+    except Exception as e:
+        res["jugador"] = str(e)
+    return res
+
+
+def datos_jugadores_partido(id_num):
+    """Ficha (bandera, edad, altura, peso) de los jugadores de un partido. Cada jugador se pide una sola vez por mes."""
+    al = hl(f"/lineups/{id_num}", ttl=86400)
+    al = al[0] if isinstance(al, list) and al else al
+    jugadores = []
+    if isinstance(al, dict):
+        for lado in ("homeTeam", "awayTeam"):
+            x = al.get(lado) or {}
+            for fila in x.get("initialLineup") or []:
+                jugadores += [j for j in (fila if isinstance(fila, list) else [fila]) if isinstance(j, dict)]
+            jugadores += [j for j in x.get("substitutes") or [] if isinstance(j, dict)]
+    jugadores = [j for j in jugadores if (j.get("id") or j.get("playerId")) and not _desconocido(j.get("name"))][:50]
+
+    def uno(j):
+        pid = j.get("id") or j.get("playerId")
+        try:
+            return j, _info_jugador(hl(f"/players/{pid}", ttl=30 * 86400))
+        except Exception:
+            return j, None
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(8) as ex:
+        res = {}
+        for j, info in ex.map(uno, jugadores):
+            if info:
+                res[normalizar(j.get("name")).strip()] = info
+    return {"jugadores": res}
+
+
 def datos_partido_hl(id_num):
     clave = "hl" + f"/matches/{id_num}" + "{}"
     previo = _memoria.get(clave)
@@ -1087,8 +1287,14 @@ def datos_partido_hl(id_num):
     res["arbitro"] = (m.get("referee") or {}).get("name", "") if isinstance(m.get("referee"), dict) else ""
     eventos = []
     for e in (m.get("events") or []):
-        eventos.append({"minuto": e.get("time") or "", "tipo": e.get("type") or "", "jugador": e.get("player") or "",
-                        "asistencia": e.get("assist") or "", "sale": e.get("substituted") or "",
+        jug = e.get("player")
+        jug = (jug.get("name") if isinstance(jug, dict) else jug) or ""
+        if _desconocido(jug) and (e.get("type") or "") not in ("Goal", "Own Goal", "Penalty"):
+            continue
+        eventos.append({"minuto": e.get("time") or "", "tipo": e.get("type") or "", "jugador": "" if _desconocido(jug) else jug,
+                        "asistencia": "" if _desconocido(e.get("assist")) else (e.get("assist") or ""),
+                        "sale": "" if _desconocido(e.get("substituted")) else (e.get("substituted") or ""),
+                        "jugadorId": e.get("playerId") or (e.get("player") or {}).get("id") if isinstance(e.get("player"), dict) else e.get("playerId"),
                         "equipo": f"h{(e.get('team') or {}).get('id')}"})
     res["eventos"] = eventos
     res["goles"] = [{"minuto": e["minuto"], "jugador": e["jugador"], "asistencia": e["asistencia"], "equipo": e["equipo"],
@@ -1102,14 +1308,31 @@ def datos_partido_hl(id_num):
             al = hl(f"/lineups/{id_num}", ttl=86400 if p["terminado"] else 900)
             al = al[0] if isinstance(al, list) and al else al
 
+            def jug(j):
+                return {"nombre": j.get("name") or "", "numero": j.get("number"), "posicion": j.get("position") or "",
+                        "id": j.get("id") or j.get("playerId")}
+
             def lado(x):
                 x = x or {}
-                filas = [[{"nombre": j.get("name") or "", "numero": j.get("number"), "posicion": j.get("position") or ""} for j in (fila if isinstance(fila, list) else [fila]) if isinstance(j, dict)]
+                # los jugadores sin nombre ("Unknown") no se muestran
+                filas = [[jug(j) for j in (fila if isinstance(fila, list) else [fila]) if isinstance(j, dict) and not _desconocido(j.get("name"))]
                          for fila in (x.get("initialLineup") or [])]
+                filas = [f for f in filas if f]
                 return {"formacion": x.get("formation") or "", "filas": filas,
-                        "suplentes": [{"nombre": j.get("name") or "", "numero": j.get("number"), "posicion": j.get("position") or ""} for j in (x.get("substitutes") or []) if isinstance(j, dict)]}
+                        "suplentes": [jug(j) for j in (x.get("substitutes") or []) if isinstance(j, dict) and not _desconocido(j.get("name"))],
+                        "dt": ((x.get("coach") or {}).get("name") if isinstance(x.get("coach"), dict) else x.get("coach")) or ""}
             if isinstance(al, dict) and (al.get("homeTeam") or al.get("awayTeam")):
-                res["alineacion"] = {"local": lado(al.get("homeTeam")), "visitante": lado(al.get("awayTeam"))}
+                a1, a2 = lado(al.get("homeTeam")), lado(al.get("awayTeam"))
+                # solo si los dos equipos tienen al menos 7 titulares con nombre
+                if sum(len(f) for f in a1["filas"]) >= 7 and sum(len(f) for f in a2["filas"]) >= 7:
+                    res["alineacion"] = {"local": a1, "visitante": a2}
+        except Exception:
+            pass
+    if p["terminado"] or p["vivo"]:
+        try:
+            res["puntajes"] = _buscar_puntajes(hl(f"/box-score/{id_num}", ttl=86400 if p["terminado"] else 600))
+        except Exception:
+            res["puntajes"] = {}
         except Exception:
             pass
     res.pop("_inicio", None)
@@ -1235,6 +1458,7 @@ def sumar_detalle_hl(res, fd):
     for g in h.get("goles", []):
         g["equipo"] = mapa.get(g["equipo"], g["equipo"])
     res["eventos"], res["goles"] = h.get("eventos", []), h.get("goles", []) or res["goles"]
+    res["puntajes"] = h.get("puntajes") or {}
     al = h.get("alineacion")
     if al and inv:
         al = {"local": al["visitante"], "visitante": al["local"]}
@@ -1559,6 +1783,38 @@ def buscar_equipo_tsdb(nombres):
                     return t
     return {}
 
+
+
+_escudos = {}
+
+
+def escudo_tsdb(nombre):
+    """Escudo de un club que no lo trae la API (TheSportsDB). Solo si el nombre coincide de verdad."""
+    from urllib.parse import quote
+    clave = normalizar(nombre).strip()
+    if clave in _escudos:
+        return _escudos[clave]
+    url = ""
+    for variante in (nombre, re.sub(r"\b(FC|CF|AFC|SC|CA|AC|SSC|FK|SK|CD|CSD|CLUB)\b", "", nombre, flags=re.I).strip()):
+        for t in primera_lista(tsdb("/searchteams.php?t=" + quote(variante), ttl=30 * 86400)):
+            if (t.get("strSport") or "Soccer") != "Soccer" or (t.get("strGender") or "Male").lower() == "female":
+                continue
+            nombres = [normalizar(x).strip() for x in [t.get("strTeam"), t.get("strTeamShort")] + (t.get("strTeamAlternate") or "").split(",") if x]
+            if clave in nombres or any(clave and (clave in n.split(" ") or n == clave) for n in nombres) or \
+                    any(n and (n.startswith(clave + " ") or clave.startswith(n + " ")) for n in nombres):
+                url = t.get("strBadge") or t.get("strTeamBadge") or ""
+                break
+        if url:
+            break
+    _escudos[clave] = url
+    return url
+
+
+def datos_escudos(nombres):
+    from concurrent.futures import ThreadPoolExecutor
+    lista = [n for n in dict.fromkeys(nombres) if n][:20]
+    with ThreadPoolExecutor(5) as ex:
+        return dict(zip(lista, ex.map(lambda n: escudo_tsdb(n), lista)))
 
 
 # ---------------------------------------------------------------------------
@@ -2792,6 +3048,58 @@ nav.abajo .on { color:var(--azul); }
 .marcador .res { font-family:Montserrat, sans-serif; font-weight:900; font-size:40px; text-align:center; padding-top:6px; font-variant-numeric:tabular-nums; }
 .marcador .estado { text-align:center; font-size:13px; font-weight:700; color:var(--suave); }
 .marcador .estado.vivo { color:var(--vivo); }
+/* Ficha del partido */
+.marcador { grid-template-columns:1fr auto 1fr; row-gap:4px; }
+.esc-rojas { position:relative; display:inline-flex; }
+.rojas { position:absolute; right:-14px; top:0; display:flex; flex-direction:column; gap:3px; }
+.rojas i { display:block; width:9px; height:13px; border-radius:2px; background:#FF3B3B; box-shadow:0 0 0 1px rgba(0,0,0,.4); }
+.goles-m { font-size:12.5px; color:#C7D2E0; line-height:1.55; padding-top:6px; border-top:1px solid var(--linea); }
+.goles-m b { color:var(--texto); }
+.goles-m.izq { text-align:right; } .goles-m.der { text-align:left; } .goles-m.pelota { text-align:center; font-size:12px; opacity:.7; }
+.tj { display:inline-block; width:10px; height:14px; border-radius:2px; background:#F5C400; vertical-align:-2px; box-shadow:0 0 0 1px rgba(0,0,0,.35); }
+.tj.roja { background:#FF3B3B; }
+.cam { width:42px; height:38px; display:block; filter:drop-shadow(0 2px 3px rgba(0,0,0,.45)); }
+.eq-barra { display:flex; align-items:center; gap:10px; padding:10px 14px; background:var(--sup); font-size:14px; }
+.eq-barra img, .eq-barra .esc { width:26px; height:26px; }
+.eq-barra span { margin-left:auto; font-weight:900; font-family:Montserrat, sans-serif; }
+.cancha1 { position:relative; padding:10px 4px; background:repeating-linear-gradient(0deg, #0E3B24 0 44px, #0C3520 44px 88px); }
+.cancha1::before { content:''; position:absolute; inset:8px; border:2px solid rgba(255,255,255,.18); border-radius:4px; pointer-events:none; }
+.mitad { display:flex; flex-direction:column; gap:14px; padding:10px 0; }
+.linea-medio { position:relative; height:2px; background:rgba(255,255,255,.22); margin:4px 8px; }
+.linea-medio::after { content:''; position:absolute; left:50%; top:50%; width:72px; height:72px; margin:-36px 0 0 -36px; border:2px solid rgba(255,255,255,.18); border-radius:50%; }
+.cl { display:flex; justify-content:space-around; position:relative; z-index:1; }
+.fj { display:flex; flex-direction:column; align-items:center; gap:3px; width:68px; }
+.fj-cam { position:relative; }
+.fj-nom { font-size:11px; font-weight:700; color:#EEF2F7; text-shadow:0 1px 2px #000; max-width:72px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.fj-tj { position:absolute; right:-6px; top:-2px; }
+.fj-gol { position:absolute; left:-12px; bottom:-2px; font-size:11px; letter-spacing:-3px; }
+.fj-cambio { position:absolute; right:-10px; bottom:-4px; min-width:18px; height:18px; padding:0 3px; border-radius:9px; background:#0B1220; border:1.5px solid #EEF2F7; color:#EEF2F7; font-size:10px; font-weight:800; display:flex; align-items:center; justify-content:center; }
+.pje { position:absolute; left:-14px; top:-6px; font-size:10px; font-weight:900; color:#06140C; padding:1px 4px; border-radius:6px; }
+.fjug .pje { position:static; display:inline-block; font-size:12px; padding:3px 7px; margin-bottom:4px; }
+.fjug { display:grid; grid-template-columns:44px 1fr auto; gap:12px; align-items:center; padding:10px 12px; border-top:1px solid var(--linea); }
+.num-c { position:relative; width:38px; height:38px; border-radius:50%; display:flex; align-items:center; justify-content:center; font-weight:900; font-size:14px; border:2px solid; }
+.num-c.dt { background:#3A4458; color:#EEF2F7; border-color:#5B6B82; font-size:12px; }
+.bandera { position:absolute; left:-6px; top:-6px; font-size:15px; font-style:normal; line-height:1; }
+.fjug-t { display:flex; flex-direction:column; min-width:0; }
+.fjug-t small { font-size:11.5px; color:var(--suave); } .fjug-t b { font-size:14.5px; }
+.mks { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
+.mk { font-size:11.5px; font-weight:700; color:#C7D2E0; background:rgba(255,255,255,.05); padding:2px 7px; border-radius:6px; display:inline-flex; align-items:center; gap:4px; }
+.mk.sale { color:#FF7B7B; } .mk.entra { color:#3DD68C; } .mk.asis { color:#8FB8FA; }
+.fjug-d { text-align:right; } .fjug-d small { font-size:12px; color:var(--suave); font-weight:700; line-height:1.45; }
+.chip img { width:18px; height:18px; object-fit:contain; vertical-align:-4px; }
+.mini-eq { display:inline-flex; align-items:center; gap:6px; } .mini-eq img { width:20px; height:20px; object-fit:contain; }
+.mm-cab { display:flex; justify-content:space-between; padding:12px 14px; border-bottom:1px solid var(--linea); font-size:13.5px; }
+.mm-fila { display:grid; grid-template-columns:1fr 46px 1fr; align-items:center; gap:6px; padding:8px 10px; border-top:1px solid rgba(255,255,255,.04); }
+.mm-min { text-align:center; font-size:12px; font-weight:900; color:var(--texto); background:var(--sup); border-radius:999px; padding:4px 0; }
+.mm-ev { display:flex; align-items:center; gap:8px; font-size:13px; }
+.mm-ev.izq { flex-direction:row-reverse; text-align:right; }
+.mm-ev small { display:block; font-size:11px; color:var(--suave); font-weight:700; }
+.mm-ev .mm-det small { color:#8FB8FA; font-weight:600; }
+.mm-ic { flex:none; width:24px; text-align:center; font-size:16px; }
+.mm-ev .entra { color:#3DD68C; font-weight:700; } .mm-ev .sale { color:#FF7B7B; font-weight:700; }
+.var { font-size:9px; font-weight:900; background:#EEF2F7; color:#0B1220; padding:2px 3px; border-radius:3px; }
+.mm-sep { text-align:center; font-size:11px; font-weight:800; letter-spacing:1px; color:var(--suave); padding:8px; text-transform:uppercase; background:rgba(255,255,255,.02); }
+
 .dato { display:flex; justify-content:space-between; gap:10px; padding:11px 0; border-top:1px solid var(--linea); font-size:13px; }
 .dato span:first-child { color:var(--suave); }
 .boton { min-height:46px; display:flex; align-items:center; justify-content:center; gap:8px; padding:0 18px; border-radius:10px; border:0; background:var(--azul); color:var(--fondo); font-weight:800; font-size:14px; }
@@ -2963,7 +3271,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 <script>
 const LIGAS = __LIGAS__;
 const HL = __HL__;  // torneos que vienen de Highlightly
-const CON_GOL = ['LPF'];  // torneos de Highlightly con tabla de goleadores
+const CON_GOL = ['LPF', 'LIB', 'SUD', 'CAR', 'PNA'];  // torneos de Highlightly con tabla de goleadores
 const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', FEDA:'#A5B4FC', PRC:'#94A3B8', PRD:'#64748B', TDC:'#F5C400', SCA:'#E879F9', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
@@ -3017,12 +3325,34 @@ async function pedirDeVerdad(ruta, intento = 0) {
   if (FRESCO.some(([re]) => re.test(ruta)) && !d.calculando && !(d.faltan && d.faltan.length)) memGuardar(ruta, d);
   return d;
 }
-function escImg(t) { return t && t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : ''; }
+function escImg(t) { const u = t && (t.escudo || (typeof ESC_CACHE !== 'undefined' && ESC_CACHE[t.nombre])); return u ? `<img src="${esc(u)}" alt="" loading="lazy">` : ''; }
 function escudo(t, cls='esc') {
   const club = t && t.id ? ` data-club="${t.id}" role="link" tabindex="0" aria-label="Ver club ${esc(t.nombre)}"` : '';
   return t && t.escudo ? `<img class="${cls}" src="${esc(t.escudo)}" alt="" loading="lazy"${club}>`
-    : `<span class="${cls} ph"${club}>${esc(((t && (t.sigla || t.nombre)) || '?').slice(0,3))}</span>`;
+    : (t && t.nombre && ESC_CACHE[t.nombre] ? `<img class="${cls}" src="${esc(ESC_CACHE[t.nombre])}" alt="" loading="lazy"${club}>`
+    : `<span class="${cls} ph"${club}${t && t.nombre && ESC_CACHE[t.nombre] === undefined ? ` data-buscar="${esc(t.nombre)}"` : ''}>${esc(((t && (t.sigla || t.nombre)) || '?').slice(0,3))}</span>`);
 }
+// Escudos que faltan: se buscan de a varios y se guardan en el celular
+let ESC_CACHE = {};
+try { ESC_CACHE = JSON.parse(localStorage.getItem('tiki_escudos') || '{}'); } catch (e) {}
+let buscandoEscudos = false;
+function completarEscudos() {
+  if (buscandoEscudos) return;
+  const faltan = [...new Set([...document.querySelectorAll('.ph[data-buscar]')].map(e => e.dataset.buscar))].filter(n => ESC_CACHE[n] === undefined).slice(0, 20);
+  if (!faltan.length) return;
+  buscandoEscudos = true;
+  fetch('/api/escudos?nombres=' + encodeURIComponent(faltan.join('|'))).then(r => r.ok ? r.json() : {}).then(d => {
+    faltan.forEach(n => { ESC_CACHE[n] = (d && d[n]) || ''; });
+    try { localStorage.setItem('tiki_escudos', JSON.stringify(ESC_CACHE)); } catch (e) {}
+    document.querySelectorAll('.ph[data-buscar]').forEach(el => {
+      const url = ESC_CACHE[el.dataset.buscar];
+      if (url) { const img = document.createElement('img'); img.className = el.className.replace(' ph', ''); img.src = url; img.alt = ''; img.loading = 'lazy';
+        if (el.dataset.club) { img.dataset.club = el.dataset.club; img.setAttribute('role', 'link'); img.tabIndex = 0; } el.replaceWith(img); }
+      else if (url === '') el.removeAttribute('data-buscar');
+    });
+  }).catch(() => {}).finally(() => { buscandoEscudos = false; setTimeout(completarEscudos, 300); });
+}
+new MutationObserver(() => { clearTimeout(completarEscudos.t); completarEscudos.t = setTimeout(completarEscudos, 400); }).observe(document.body, { childList: true, subtree: true });
 // En lugar de las iniciales: la silueta de un jugador
 function iniciales(n) { return '<svg class="silueta" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="4.2" fill="currentColor"/><path d="M3.8 21c.6-4.6 4-7.4 8.2-7.4s7.6 2.8 8.2 7.4z" fill="currentColor"/></svg>'; }
 function estadoTexto(p) {
@@ -3084,14 +3414,15 @@ new MutationObserver(() => document.querySelectorAll('.cargando:not([data-dato])
   setTimeout(() => { if (el.isConnected) ponerDato(el); }, 900);
 })).observe(document.body, { childList: true, subtree: true });
 function armarMenu() {
-  const grupos = [['ARGENTINA', ['LPF','PNA','FEDA','PRC','PRD','CAR','TDC','SCA']], ['SUDAMÉRICA', ['LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN']],
-    ['NORTEAMÉRICA', ['MLS','LMX']], ['EUROPA', ['CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC']],
-    ['COPAS DE EUROPA', ['FAC','CDR','CIT','DFB','CDF']], ['ASIA', ['SAU']], ['SELECCIONES', ['WC','CAM','EURO']]]
+  const grupos = [['ARGENTINA Y COPAS', ['LPF','LIB','SUD','CAR']], ['TORNEOS DE EUROPA', ['CL','UEL','UECL']],
+    ['LAS 5 GRANDES LIGAS', ['PL','PD','BL1','SA','FL1']], ['ASCENSO ARGENTINO', ['PNA']],
+    ['MÁS LIGAS', ['BSA','PPL','DED','ELC','MLS','LMX','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU']],
+    ['COPAS NACIONALES', ['FAC','CDR','CIT','DFB','CDF','TDC','SCA']], ['MÁS ASCENSO ARGENTINO', ['FEDA','PRC','PRD']], ['SELECCIONES', ['WC','CAM','EURO']]]
     .map(([n, cods]) => [n, cods.filter(c => LIGAS[c])]).filter(g => g[1].length);
   let h = `<div class="grupo">
     <a class="item" href="#/">${svg(ICON.inicio,20)}Inicio</a>
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
-    <a class="item" href="#/jugadores">${svg(ICON.jug,20)}Goleadores y comparador</a>
+    <a class="item" href="#/jugadores">${svg(ICON.jug,20)}Estadísticas de jugadores</a>
     <a class="item" href="#/favoritos">${svg(ICON.estrella,20)}Mis favoritos</a>
     <a class="item" href="#/favoritos"><span style="width:20px;text-align:center">🔔</span>Avisos de gol en vivo</a>
     <a class="item" href="#/envivo"><span style="width:20px;display:flex;justify-content:center"><span class="punto" style="background:#FF3B3B;width:10px;height:10px"></span></span>En vivo gratis</a>
@@ -3415,6 +3746,52 @@ async function vistaEnVivo(idVideo) {
 }
 
 /* ---------- Partido ---------- */
+const POS_COL = { ARQ:'#A78BFA', DEF:'#FF5A5F', MED:'#FDBA74', DEL:'#3DD68C', SUP:'#8E9AAE' };
+const POS_ABR = { ARQ:'ARQ', DEF:'DFC', MED:'MC', DEL:'DC', SUP:'SUP' };
+const POS_NOM = { ARQ:'Arquero', DEF:'Defensor', MED:'Mediocampista', DEL:'Delantero', SUP:'Suplente' };
+function posDeTexto(t) { t = (t || '').toLowerCase(); if (t.includes('goal') || t === 'g') return 'ARQ'; if (t.includes('def') || t.includes('back') || t === 'd') return 'DEF'; if (t.includes('mid') || t === 'm') return 'MED'; if (t.includes('att') || t.includes('forw') || t.includes('off') || t.includes('strik') || t.includes('wing') || t === 'f') return 'DEL'; return ''; }
+function posDeFila(i, n) { return i === 0 ? 'ARQ' : i === 1 ? 'DEF' : i === n - 1 ? 'DEL' : 'MED'; }
+// Banderas: código de país -> emoji
+function bandera(cod) {
+  if (!cod) return '';
+  const esp = { 'GB-ENG':'🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}', 'GB-SCT':'🏴\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}', 'GB-WLS':'🏴\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}' };
+  if (esp[cod]) return esp[cod];
+  return cod.length === 2 ? String.fromCodePoint(...[...cod.toUpperCase()].map(c => 0x1F1E6 + c.charCodeAt(0) - 65)) : '';
+}
+const nrm = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+const minNum = (m) => { const x = String(m || '').match(/(\d+)(?:\s*\+\s*(\d+))?/); return x ? +x[1] + (x[2] ? +x[2] / 100 : 0) : 0; };
+const esGol = (t) => /^(goal|penalty)$/i.test(t);
+const esRoja = (t) => /red card|second yellow|yellow.?red/i.test(t);
+const esAmarilla = (t) => /^yellow card$/i.test(t);
+const esCambio = (t) => /substitut/i.test(t);
+const esLesion = (t) => /injur|lesi/i.test(t);
+const esPalo = (t) => /wood|post|crossbar|bar\b|palo/i.test(t);
+// Qué hizo cada jugador en el partido (goles, asistencias, tarjetas, cambios, lesiones)
+function eventosPorJugador(p) {
+  const m = {};
+  const de = (n) => (m[nrm(n)] ||= { goles: [], asist: [], gec: [], am: null, roja: null, entra: null, sale: null, lesion: null, entraPor: '' });
+  (p.eventos || []).forEach(e => {
+    if (esGol(e.tipo) && e.jugador) de(e.jugador).goles.push(e.minuto);
+    if (esGol(e.tipo) && e.asistencia) de(e.asistencia).asist.push(e.minuto);
+    if (/own goal/i.test(e.tipo) && e.jugador) de(e.jugador).gec.push(e.minuto);
+    if (esAmarilla(e.tipo) && e.jugador) de(e.jugador).am = e.minuto;
+    if (esRoja(e.tipo) && e.jugador) de(e.jugador).roja = e.minuto;
+    if (esCambio(e.tipo)) { if (e.jugador) de(e.jugador).entra = e.minuto; if (e.sale) { de(e.sale).sale = e.minuto; de(e.sale).entraPor = e.jugador; } }
+    if (esLesion(e.tipo) && e.jugador) de(e.jugador).lesion = e.minuto;
+  });
+  return m;
+}
+function rojasDe(p, idEq) { return (p.eventos || []).filter(e => esRoja(e.tipo) && String(e.equipo) === String(idEq)).length; }
+function colorPuntaje(v) { return v >= 8 ? '#1E9E5A' : v >= 7 ? '#3DD68C' : v >= 6.5 ? '#A3D65C' : v >= 6 ? '#F5C451' : '#FF8A4C'; }
+function camisetaNum(c, num) {
+  const claro = (h) => { const x = parseInt(String(h).replace('#', '').padEnd(6, '0'), 16); return ((x >> 16) * 299 + ((x >> 8) & 255) * 587 + (x & 255) * 114) / 1000 > 150; };
+  const txt = claro(c.c1) ? '#0B1220' : '#FFFFFF';
+  return `<svg class="cam" viewBox="0 0 40 36" aria-hidden="true"><path d="M13 2 L6 5 L1 12 L7 16 L9 13 L9 34 L31 34 L31 13 L33 16 L39 12 L34 5 L27 2 Q20 7 13 2 Z" fill="${c.c1}" stroke="${c.c2}" stroke-width="2" stroke-linejoin="round"/>
+    <text x="20" y="27" text-anchor="middle" font-family="Inter, sans-serif" font-weight="900" font-size="13" fill="${txt}">${num ?? ''}</text></svg>`;
+}
+const PALO_SVG = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M3 21V5h14v16" fill="none" stroke="#EEF2F7" stroke-width="2.2"/><circle cx="18.5" cy="6.5" r="3.6" fill="#fff" stroke="#0B1220" stroke-width="1.2"/></svg>';
+const tarjeta = (roja) => `<i class="tj ${roja ? 'roja' : ''}"></i>`;
+
 async function vistaPartido(id) {
   $('vista').innerHTML = volver('Partido') + '<div class="cargando">Cargando partido…</div>';
   let p;
@@ -3422,75 +3799,129 @@ async function vistaPartido(id) {
   const jugado = p.gl !== null && p.gl !== undefined;
   const d = new Date(p.fecha + 'T12:00:00');
   const fechaTxt = `${DIAS_L[d.getDay()]} ${d.getDate()} de ${MESES_L[d.getMonth()]} · ${p.hora}`;
-  const yt = 'https://www.youtube.com/results?search_query=' + encodeURIComponent(`${p.local.nombre} vs ${p.visitante.nombre} resumen ${p.fecha.slice(0,4)}`);
-  let estado = p.vivo ? `${estadoTexto(p)} · En vivo` : p.terminado ? 'Final' : fechaTxt;
+  const estado = p.vivo ? `${estadoTexto(p)} · En vivo` : p.terminado ? 'Final' : fechaTxt;
   const esHL = p.fuente === 'hl';
-  const pest = esHL ? ['Resumen', 'Goles', 'Formación', 'Estadísticas', 'Minuto a minuto'] : ['Resumen', 'Goles', 'Historial'];
-  if (esHL && p.historial && p.historial.total) pest.push('Historial');
+  p.colores = p.colores || { local: { c1: '#2F6BDB', c2: '#fff' }, visitante: { c1: '#E5E7EB', c2: '#111' } };
+  const EV = eventosPorJugador(p);
+  // goles debajo del marcador, cada uno en su lado
+  const golesDe = (idEq) => (p.goles || []).filter(g => String(g.equipo) === String(idEq))
+    .map(g => `<div><b>${esc(g.minuto)}'</b> ${esc(g.jugador || 'Gol')}${g.tipo === 'PENALTY' ? ' (p)' : g.tipo === 'OWN' ? ' (e.c.)' : ''}</div>`).join('');
+  const gL = golesDe(p.local.id), gV = golesDe(p.visitante.id);
+  const rojas = (idEq) => { const n = rojasDe(p, idEq); return n ? `<span class="rojas">${'<i></i>'.repeat(n)}</span>` : ''; };
+  // pestañas: solo las que tienen datos
+  const pest = [['Resumen', () => panelResumen()]];
+  const hayAlin = p.alineacion && p.alineacion.local && p.alineacion.visitante && p.alineacion.local.filas.length;
+  if (hayAlin) pest.push(['Formación', () => panelFormacion(p, EV)]);
+  if (esHL && (p.vivo || p.terminado)) pest.push(['Estadísticas', () => '<div id="stats"><div class="cargando">Cargando estadísticas…</div></div>']);
+  if ((p.eventos || []).length) pest.push(['Minuto a minuto', () => panelMinuto(p)]);
+  if (p.historial && p.historial.total) pest.push(['Historial', () => panelHistorial(p)]);
   $('vista').innerHTML = `<div class="volver"><a class="icono" href="javascript:history.back()" aria-label="Volver">${svg(ICON.atras)}</a>
-      <a href="#/liga/${p.liga}" style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">${esc(p.ligaNombre)}</b><small style="color:var(--suave);font-size:12px">${p.jornada ? 'Fecha ' + p.jornada : esc((p.fase || '').replaceAll('_',' ').toLowerCase())}</small></a></div>
+      <a href="#/liga/${p.liga}" style="flex:1;display:flex;flex-direction:column"><b style="font-size:15px">${esc(p.ligaNombre)}</b><small style="color:var(--suave);font-size:12px">${p.jornada ? 'Fecha ' + p.jornada : esc(nombreFase(p.fase))}</small></a></div>
     <section class="marcador">
-      <div class="lado">${escudo(p.local)}${esc(p.local.nombre)}</div>
+      <div class="lado"><span class="esc-rojas">${escudo(p.local)}${rojas(p.local.id)}</span>${esc(p.local.nombre)}</div>
       <div><div class="res">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</div><div class="estado ${p.vivo ? 'vivo' : ''}">${esc(estado)}</div></div>
-      <div class="lado">${escudo(p.visitante)}${esc(p.visitante.nombre)}</div>
+      <div class="lado"><span class="esc-rojas">${escudo(p.visitante)}${rojas(p.visitante.id)}</span>${esc(p.visitante.nombre)}</div>
+      ${gL || gV ? `<div class="goles-m izq">${gL}</div><div class="goles-m pelota">${gL || gV ? '⚽' : ''}</div><div class="goles-m der">${gV}</div>` : ''}
     </section>
-    <div class="pestanas" role="tablist">${pest.map((t, i) => `<button role="tab" data-p="${i}" class="${i === 0 ? 'on' : ''}">${t}</button>`).join('')}</div>
+    ${pest.length > 1 ? `<div class="pestanas" role="tablist">${pest.map(([t], i) => `<button role="tab" data-p="${i}" class="${i === 0 ? 'on' : ''}">${t}</button>`).join('')}</div>` : ''}
     <main id="panel"></main>`;
-  const paneles = [
-    () => `<div id="resumenYT"><div class="portada-video cargando-video"></div></div>
+  function panelResumen() {
+    return `<div id="resumenYT"><div class="portada-video cargando-video"></div></div>
       <section class="tarjeta pad"><h2 style="margin:0 0 4px;font-size:15px">Información</h2>
         <div class="dato"><span>Fecha</span><span>${esc(fechaTxt)}</span></div>
         ${p.medio && p.medio[0] !== null && p.medio[0] !== undefined ? `<div class="dato"><span>Primer tiempo</span><span>${p.medio[0]} - ${p.medio[1]}</span></div>` : ''}
         ${p.estadio ? `<div class="dato"><span>Estadio</span><span>${esc(p.estadio)}</span></div>` : ''}
         ${p.arbitro ? `<div class="dato"><span>Árbitro</span><span>${esc(p.arbitro)}</span></div>` : ''}
       </section>
-      ${esHL ? (p.vivo ? '<p class="nota-pie">Se actualiza solo cada uno o dos minutos mientras se juega.</p>' : '') : ''}`,
-    () => p.goles.length ? `<section class="tarjeta pad">${p.goles.map(g => `<div class="dato"><span style="color:var(--texto);font-weight:700">${g.minuto ? g.minuto + "'" : ''}</span><span style="flex:1">${esc(g.jugador)}${g.tipo === 'OWN' ? ' (en contra)' : g.tipo === 'PENALTY' ? ' (penal)' : ''}${g.asistencia ? `<br><small style="color:var(--suave)">Asistencia: ${esc(g.asistencia)}</small>` : ''}</span><span>${esc(g.equipo === p.local.id ? p.local.nombre : p.visitante.nombre)}</span></div>`).join('')}</section>`
-      : `<div class="tarjeta aviso">${jugado ? (esHL ? 'Sin goles por ahora.' : 'Todavía no tenemos quién hizo los goles de este partido.') : 'Todavía no se jugó.'}</div>`,
-    ...(esHL ? [() => panelFormacion(p), () => '<div id="stats"><div class="cargando">Cargando estadísticas…</div></div>', () => panelMinuto(p), () => panelHistorial(p)] : [() => panelHistorial(p)])
-  ];
-  function panelHistorial(p) {
-      const h = p.historial;
-      if (!h || !h.total) return '<div class="tarjeta aviso">No hay historial entre estos equipos.</div>';
-      return `<section class="tarjeta pad"><h2 style="margin:0 0 10px;font-size:15px">Últimos ${h.total} enfrentamientos</h2>
-        <div class="datos3"><div><small>Ganó ${esc(p.local.nombre)}</small><b>${h.local ?? 0}</b></div><div><small>Empates</small><b>${h.empates ?? 0}</b></div><div><small>Ganó ${esc(p.visitante.nombre)}</small><b>${h.visitante ?? 0}</b></div></div></section>
-        <section class="tarjeta">${h.partidos.map(x => filaPartido(x, true)).join('')}</section>`;
+      ${esHL && p.vivo ? '<p class="nota-pie">Se actualiza solo cada uno o dos minutos mientras se juega.</p>' : ''}`;
   }
-  const mostrar = (i) => { $('panel').innerHTML = paneles[i](); document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i)); if (i === 0) cargarResumenYT(p.id); if (esHL && i === 2) cargarFotos($('panel')); if (esHL && i === 3) cargarStats(p); };
+  function panelHistorial(p) {
+    const h = p.historial;
+    return `<section class="tarjeta pad"><h2 style="margin:0 0 10px;font-size:15px">Últimos ${h.total} enfrentamientos</h2>
+      <div class="datos3"><div><small>Ganó ${esc(p.local.nombre)}</small><b>${h.local ?? 0}</b></div><div><small>Empates</small><b>${h.empates ?? 0}</b></div><div><small>Ganó ${esc(p.visitante.nombre)}</small><b>${h.visitante ?? 0}</b></div></div></section>
+      <section class="tarjeta">${h.partidos.map(x => filaPartido(x, true)).join('')}</section>`;
+  }
+  const mostrar = (i) => {
+    $('panel').innerHTML = pest[i][1]();
+    document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i));
+    if (pest[i][0] === 'Resumen') cargarResumenYT(p.id);
+    if (pest[i][0] === 'Estadísticas') cargarStats(p);
+    if (pest[i][0] === 'Formación') { activarFormacion(p, EV); cargarInfoJugadores(p, EV); }
+  };
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => mostrar(+b.dataset.p));
   mostrar(0);
+  // si no hay estadísticas, la pestaña se saca sola
+  if (esHL && (p.vivo || p.terminado)) pedir('/api/estadisticas?id=' + (p.hlId || p.id)).then(s => {
+    if (!s.estadisticas || !s.estadisticas.length) { const b = [...document.querySelectorAll('.pestanas button')].find(x => x.textContent === 'Estadísticas'); if (b && !b.classList.contains('on')) b.remove(); }
+  }).catch(() => {});
 }
 
-const lado = { local: true };
-const POS_COL = { ARQ:'#A78BFA', DEF:'#FF5A5F', MED:'#FDBA74', DEL:'#3DD68C', SUP:'#8E9AAE' };
-const POS_ABR = { ARQ:'ARQ', DEF:'DFC', MED:'MC', DEL:'DC', SUP:'SUP' };
-const POS_NOM = { ARQ:'Arquero', DEF:'Defensor', MED:'Mediocampista', DEL:'Delantero', SUP:'Suplente' };
-function posDeTexto(t) { t = (t || '').toLowerCase(); if (t.includes('goal') || t === 'g') return 'ARQ'; if (t.includes('def') || t.includes('back') || t === 'd') return 'DEF'; if (t.includes('mid') || t === 'm') return 'MED'; if (t.includes('att') || t.includes('forw') || t.includes('off') || t.includes('strik') || t.includes('wing') || t === 'f') return 'DEL'; return ''; }
-function posDeFila(i, n) { return i === 0 ? 'ARQ' : i === 1 ? 'DEF' : i === n - 1 ? 'DEL' : 'MED'; }
-function panelFormacion(p) {
-  const a = p.alineacion;
-  if (!a) return `<div class="tarjeta aviso">${p.terminado || p.vivo ? 'No hay formaciones para este partido.' : 'Las formaciones aparecen cerca de una hora antes del partido.'}</div>`;
-  const pintar = (eq, t) => {
-    if (!eq || !eq.filas.length) return '<div class="aviso">Sin datos.</div>';
-    const n = eq.filas.length;
-    const ficha = (j, pos) => { const c = POS_COL[pos];
-      return `<div class="slot"><div class="ficha-j" style="--c:${c}" title="${POS_NOM[pos]}">${t.escudo ? `<img src="${esc(t.escudo)}" alt="" loading="lazy">` : `<span class="pos-txt">${POS_ABR[pos]}</span>`}${j.numero ? `<span class="num">${j.numero}</span>` : ''}</div>
-        <span class="nom-slot">${esc(String(j.nombre).split(' ').slice(-1)[0])}</span></div>`; };
-    const filas = eq.filas.map((f, i) => f.map(j => ficha(j, posDeTexto(j.posicion) || posDeFila(i, n)))).reverse();
-    const leyenda = ['ARQ', 'DEF', 'MED', 'DEL'].map(k => `<span><i style="background:${POS_COL[k]}"></i>${POS_NOM[k]}</span>`).join('');
-    const sup = eq.suplentes.length ? `<div class="suplentes"><h3><span>SUPLENTES</span><span>${eq.suplentes.length}</span></h3>
-      ${eq.suplentes.map(j => { const pos = posDeTexto(j.posicion) || 'SUP'; const c = POS_COL[pos];
-        return `<div class="sup" style="--c:${c}"><span class="num">${j.numero ?? '–'}</span><span class="n">${esc(j.nombre)}</span><span class="sup-pos">${POS_NOM[pos]}</span></div>`; }).join('')}</div>` : '';
-    return `<div class="cancha">${filas.map(f => `<div class="linea">${f.join('')}</div>`).join('')}</div><div class="leyenda-pos">${leyenda}</div>${sup}`;
-  };
-  const html = (k) => `<section class="tarjeta"><div class="chips" style="padding:10px 12px 0">
-      <button class="chip ${k === 'local' ? 'on' : ''}" data-lado="local">${esc(p.local.nombre)}${a.local.formacion ? ' · ' + esc(a.local.formacion) : ''}</button>
-      <button class="chip ${k === 'visitante' ? 'on' : ''}" data-lado="visitante">${esc(p.visitante.nombre)}${a.visitante.formacion ? ' · ' + esc(a.visitante.formacion) : ''}</button></div>
-    ${pintar(a[k], k === 'local' ? p.local : p.visitante)}</section>`;
-  setTimeout(() => panelFormacionEventos(html), 0);
-  return html('local');
+/* Formación: una sola cancha con los dos equipos enfrentados */
+const POS_LARGA = { ARQ: 'Arquero', DEF: 'Defensor', MED: 'Mediocampista', DEL: 'Delantero', SUP: 'Suplente' };
+let FORM = { lado: 'local', info: {} };
+function puntajeDe(p, j) { const v = (p.puntajes || {})[nrm(j.nombre)]; return v ? `<span class="pje" style="background:${colorPuntaje(v)}">${v.toFixed(1)}</span>` : ''; }
+function fichaCancha(p, j, ev, col, numeros) {
+  const e = ev[nrm(j.nombre)] || {};
+  const entra = e.entraPor ? (numeros[nrm(e.entraPor)] ?? '') : '';
+  return `<div class="fj">
+    <div class="fj-cam">${camisetaNum(col, j.numero)}${puntajeDe(p, j)}
+      ${e.roja ? '<i class="tj roja fj-tj"></i>' : e.am ? '<i class="tj fj-tj"></i>' : ''}
+      ${e.goles && e.goles.length ? `<span class="fj-gol">${'⚽'.repeat(Math.min(e.goles.length, 3))}</span>` : ''}
+      ${e.sale ? `<span class="fj-cambio" title="Salió ${esc(e.sale)}'">${entra !== '' ? entra : '⇄'}</span>` : ''}</div>
+    <span class="fj-nom">${esc(String(j.nombre).split(' ').slice(-1)[0])}</span></div>`;
 }
-function panelFormacionEventos(html) { document.querySelectorAll('[data-lado]').forEach(b => b.onclick = () => { $('panel').innerHTML = html(b.dataset.lado); panelFormacionEventos(html); }); }
+function panelFormacion(p, ev) {
+  const a = p.alineacion;
+  const nums = (eq) => { const m = {}; eq.filas.flat().concat(eq.suplentes).forEach(j => { m[nrm(j.nombre)] = j.numero; }); return m; };
+  const nL = nums(a.local), nV = nums(a.visitante);
+  const lineas = (eq, col, n, arriba) => { const f = arriba ? eq.filas : eq.filas.slice().reverse();
+    return f.map(fila => `<div class="cl">${fila.map(j => fichaCancha(p, j, ev, col, n)).join('')}</div>`).join(''); };
+  const barra = (t, eq) => `<div class="eq-barra">${escudo(t)}<b>${esc(t.nombre)}</b><span>${esc(eq.formacion || '')}</span></div>`;
+  return `<section class="tarjeta" style="overflow:hidden">
+      ${barra(p.visitante, a.visitante)}
+      <div class="cancha1"><div class="mitad">${lineas(a.visitante, p.colores.visitante, nV, true)}</div><div class="linea-medio"></div><div class="mitad">${lineas(a.local, p.colores.local, nL, false)}</div></div>
+      ${barra(p.local, a.local)}
+    </section>
+    <div class="chips" style="margin-top:2px"><button class="chip ${FORM.lado === 'local' ? 'on' : ''}" data-flado="local">${escImg(p.local)} ${esc(p.local.nombre)}</button><button class="chip ${FORM.lado === 'visitante' ? 'on' : ''}" data-flado="visitante">${escImg(p.visitante)} ${esc(p.visitante.nombre)}</button></div>
+    <div id="listaJug">${listaJugadores(p, ev)}</div>`;
+}
+function listaJugadores(p, ev) {
+  const k = FORM.lado, eq = p.alineacion[k], col = p.colores[k], n = eq.filas.length;
+  const fila = (j, pos) => {
+    const e = ev[nrm(j.nombre)] || {}, inf = FORM.info[nrm(j.nombre)] || {};
+    const marcas = [
+      e.am && !e.roja ? `<span class="mk">${tarjeta(false)}${esc(e.am)}'</span>` : '', e.roja ? `<span class="mk">${tarjeta(true)}${esc(e.roja)}'</span>` : '',
+      ...(e.goles || []).map(m => `<span class="mk">⚽ ${esc(m)}'</span>`), ...(e.gec || []).map(m => `<span class="mk">⚽ ${esc(m)}' (e.c.)</span>`),
+      ...(e.asist || []).map(m => `<span class="mk asis">👟 Asist. ${esc(m)}'</span>`),
+      e.sale ? `<span class="mk sale">⇄ ${esc(e.sale)}'</span>` : '', e.entra ? `<span class="mk entra">⇄ ${esc(e.entra)}'</span>` : '',
+      e.lesion ? `<span class="mk">🩹 Lesión ${esc(e.lesion)}'</span>` : ''].join('');
+    const fis = [inf.altura, inf.edad ? inf.edad + ' años' : '', inf.peso].filter(Boolean);
+    return `<div class="fjug"><span class="num-c" style="background:${col.c1};color:${col.c2};border-color:${col.c2}">${j.numero ?? '–'}${inf.bandera ? `<em class="bandera">${bandera(inf.bandera)}</em>` : ''}</span>
+      <span class="fjug-t"><small>${POS_LARGA[pos] || ''}</small><b>${esc(j.nombre)}</b>${marcas ? `<span class="mks">${marcas}</span>` : ''}</span>
+      <span class="fjug-d">${puntajeDe(p, j)}${fis.length ? `<small>${fis.map(esc).join('<br>')}</small>` : ''}</span></div>`;
+  };
+  return `<section class="tarjeta"><div class="cab"><div class="t"><b>Titulares</b><small>${esc(p[k].nombre)}${eq.formacion ? ' · ' + esc(eq.formacion) : ''}</small></div></div>
+      ${eq.dt ? `<div class="fjug"><span class="num-c dt">DT</span><span class="fjug-t"><small>Dirección técnica</small><b>${esc(eq.dt)}</b></span><span></span></div>` : ''}
+      ${eq.filas.flatMap((f, i) => f.map(j => fila(j, posDeTexto(j.posicion) || posDeFila(i, n)))).join('')}</section>
+    ${eq.suplentes.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Suplentes</b></div></div>${eq.suplentes.map(j => fila(j, posDeTexto(j.posicion) || 'SUP')).join('')}</section>` : ''}`;
+}
+function activarFormacion(p, ev) {
+  document.querySelectorAll('[data-flado]').forEach(b => b.onclick = () => {
+    FORM.lado = b.dataset.flado;
+    document.querySelectorAll('[data-flado]').forEach(x => x.classList.toggle('on', x === b));
+    $('listaJug').innerHTML = listaJugadores(p, ev);
+  });
+}
+async function cargarInfoJugadores(p, ev) {
+  const hid = p.hlId || (String(p.id).startsWith('h') ? p.id : null);
+  if (!hid) return;
+  try {
+    const d = await pedir('/api/jugadores_partido?id=' + hid);
+    FORM.info = d.jugadores || {};
+    if ($('listaJug').isConnected && Object.keys(FORM.info).length) $('listaJug').innerHTML = listaJugadores(p, ev);
+  } catch (e) {}
+}
+
 const STATS_ES = { 'Ball possession':'Posesión', 'Possession':'Posesión', 'Total shots':'Remates', 'Shots on target':'Remates al arco', 'Shots off target':'Remates afuera', 'Blocked shots':'Remates bloqueados', 'Corner kicks':'Córners', 'Corners':'Córners', 'Fouls':'Faltas', 'Offsides':'Offsides', 'Yellow cards':'Amarillas', 'Red cards':'Rojas', 'Goalkeeper saves':'Atajadas', 'Total passes':'Pases', 'Passes accurate':'Pases correctos', 'Expected goals':'Goles esperados (xG)' };
 async function cargarStats(p) {
   const el = $('stats'); if (!el) return;
@@ -3498,24 +3929,43 @@ async function cargarStats(p) {
     const d = await pedir('/api/estadisticas?id=' + (p.hlId || p.id));
     if (!d.estadisticas.length) { el.innerHTML = '<div class="tarjeta aviso">Todavía no hay estadísticas de este partido.</div>'; return; }
     const num = (v) => parseFloat(String(v ?? '0').replace('%', '').replace(',', '.')) || 0;
-    el.innerHTML = `<section class="tarjeta pad"><div style="display:flex;justify-content:space-between;font-size:12px;font-weight:700;color:var(--suave);margin-bottom:6px"><span>${esc(p.local.nombre)}</span><span>${esc(p.visitante.nombre)}</span></div>
+    el.innerHTML = `<section class="tarjeta pad"><div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:var(--suave);margin-bottom:6px"><span class="mini-eq">${escImg(p.local)}${esc(p.local.nombre)}</span><span class="mini-eq">${esc(p.visitante.nombre)}${escImg(p.visitante)}</span></div>
       ${d.estadisticas.map(s => { const a = num(s.local), b = num(s.visitante), t = (a + b) || 1; return `<div style="padding:10px 0;border-top:1px solid var(--linea)">
         <div style="display:grid;grid-template-columns:60px 1fr 60px;font-size:14px"><b>${esc(s.local ?? '-')}</b><span style="text-align:center;font-size:12px;color:var(--suave)">${esc(STATS_ES[s.nombre] || s.nombre)}</span><b style="text-align:right">${esc(s.visitante ?? '-')}</b></div>
-        <div class="barra"><div><i style="width:${Math.round(a / t * 100)}%;background:var(--plata)"></i></div><div><i style="width:${Math.round(b / t * 100)}%;background:#FF9F43"></i></div></div></div>`; }).join('')}</section>`;
+        <div class="barra"><div><i style="width:${Math.round(a / t * 100)}%;background:${p.colores.local.c1}"></i></div><div><i style="width:${Math.round(b / t * 100)}%;background:${p.colores.visitante.c1}"></i></div></div></div>`; }).join('')}</section>`;
   } catch (e) { el.innerHTML = error(e); }
 }
-const EVENTO = { 'Goal':['⚽','Gol'], 'Own Goal':['⚽','Gol en contra'], 'Penalty':['⚽','Gol de penal'], 'Missed Penalty':['✕','Penal errado'], 'Yellow Card':['▮','Amarilla'], 'Red Card':['▮','Roja'], 'Substitution':['⇄','Cambio'], 'VAR Goal Confirmed':['VAR','Gol confirmado'], 'VAR Goal Cancelled':['VAR','Gol anulado'], 'VAR Goal Cancelled - Offside':['VAR','Gol anulado por offside'], 'VAR Penalty':['VAR','Penal por VAR'], 'VAR Penalty Cancelled':['VAR','Penal anulado'] };
+
+/* Minuto a minuto: cada equipo de su lado, con el minuto en el medio */
+function eventoHTML(e) {
+  const t = e.tipo || '';
+  let ic, tit, det = '';
+  if (/own goal/i.test(t)) { ic = '⚽'; tit = 'Gol en contra'; det = e.jugador; }
+  else if (/missed penalty/i.test(t)) { ic = '❌'; tit = 'Penal errado'; det = e.jugador; }
+  else if (/var/i.test(t)) { ic = '<span class="var">VAR</span>'; tit = /cancel/i.test(t) ? (/penalty/i.test(t) ? 'Penal anulado' : 'Gol anulado') : (/penalty/i.test(t) ? 'Penal por VAR' : 'Gol confirmado'); det = e.jugador; }
+  else if (esGol(t)) { ic = '⚽'; tit = /penalty/i.test(t) ? 'Gol de penal' : 'Gol'; det = `<b>${esc(e.jugador)}</b>${e.asistencia ? `<br><small>Asistencia: ${esc(e.asistencia)}</small>` : ''}`; return [ic, tit, det, true]; }
+  else if (esRoja(t)) { ic = tarjeta(true); tit = /second|yellow/i.test(t) ? 'Doble amarilla' : 'Tarjeta roja'; det = e.jugador; }
+  else if (esAmarilla(t)) { ic = tarjeta(false); tit = 'Amarilla'; det = e.jugador; }
+  else if (esCambio(t)) { ic = '⇄'; tit = 'Cambio'; return [ic, tit, `<span class="entra">▲ ${esc(e.jugador)}</span>${e.sale ? `<br><span class="sale">▼ ${esc(e.sale)}</span>` : ''}`, true]; }
+  else if (esLesion(t)) { ic = '🩹'; tit = 'Lesión'; det = e.jugador; }
+  else if (esPalo(t)) { ic = PALO_SVG; tit = 'Pelota en el palo'; det = e.jugador; }
+  else { ic = '•'; tit = t; det = e.jugador; }
+  return [ic, tit, `<b>${esc(det || '')}</b>`, true];
+}
 function panelMinuto(p) {
-  if (!p.eventos || !p.eventos.length) return `<div class="tarjeta aviso">${p.vivo || p.terminado ? 'Todavía no hay jugadas importantes.' : 'El partido no empezó.'}</div>`;
-  const lista = p.eventos.slice().reverse();
-  return `<section class="tarjeta pad">${lista.map(e => { const [ic, txt] = EVENTO[e.tipo] || ['•', e.tipo]; const eq = e.equipo === p.local.id ? p.local.nombre : p.visitante.nombre;
-    const color = e.tipo === 'Yellow Card' ? '#F5C451' : e.tipo === 'Red Card' ? '#FF5A5F' : 'var(--texto)';
-    return `<div class="dato" style="align-items:flex-start"><b style="min-width:40px;color:var(--suave)">${esc(e.minuto)}'</b>
-      <span style="min-width:30px;color:${color};font-weight:800">${ic}</span>
-      <span style="flex:1"><b>${txt}</b> · ${esc(eq)}<br><small style="color:#C7D2E0">${esc(e.jugador)}${e.tipo === 'Substitution' && e.sale ? ' entra por ' + esc(e.sale) : ''}${e.asistencia ? ' · asistencia de ' + esc(e.asistencia) : ''}</small></span></div>`; }).join('')}</section>`;
+  const lista = (p.eventos || []).slice().sort((a, b) => minNum(a.minuto) - minNum(b.minuto));
+  let medio = false;
+  const filas = lista.map(e => {
+    const [ic, tit, det] = eventoHTML(e), loc = String(e.equipo) === String(p.local.id);
+    const celda = `<div class="mm-ev ${loc ? 'izq' : 'der'}"><span class="mm-ic">${ic}</span><span><small>${esc(tit)}</small><span class="mm-det">${det}</span></span></div>`;
+    let sep = '';
+    if (!medio && minNum(e.minuto) > 45.99 && !/^45/.test(String(e.minuto))) { medio = true; sep = '<div class="mm-sep">Entretiempo</div>'; }
+    return sep + `<div class="mm-fila">${loc ? celda : '<div></div>'}<span class="mm-min">${esc(e.minuto)}'</span>${loc ? '<div></div>' : celda}</div>`;
+  }).join('');
+  return `<section class="tarjeta mm"><div class="mm-cab"><span class="mini-eq">${escImg(p.local)}<b>${esc(p.local.nombre)}</b></span><span class="mini-eq der"><b>${esc(p.visitante.nombre)}</b>${escImg(p.visitante)}</span></div>
+    <div class="mm-sep">Comienza el partido</div>${filas}${p.terminado ? '<div class="mm-sep">Final del partido</div>' : ''}</section>`;
 }
 
-/* ---------- Liga: partidos por fecha, tabla y goleadores ---------- */
 /* ---------- Fechas de un torneo: en orden de calendario y arrancando en la que se juega ahora ---------- */
 const FASES_ES = [[/round of 64|1\/32/i, '32avos de final'], [/round of 32|1\/16|last[ _]32/i, '16avos de final'], [/round of 16|1\/8|last[ _]16|octavos/i, 'Octavos de final'],
   [/quarter|cuartos/i, 'Cuartos de final'], [/semi/i, 'Semifinales'], [/3rd|third/i, 'Tercer puesto'], [/^final$|^finals?$|(^|[^-])\bfinal\b$/i, 'Final'],
@@ -3563,7 +4013,7 @@ function armarFechas(partidos, cod) {
 }
 async function vistaLiga(cod, pestana) {
   pestana = pestana || 'partidos';
-  $('vista').innerHTML = volver(LIGAS[cod][0]) + `<div class="pestanas">${['partidos','tabla','goleadores'].map(t => `<button data-t="${t}" class="${t === pestana ? 'on' : ''}">${t[0].toUpperCase() + t.slice(1)}</button>`).join('')}</div><main id="panel"><div class="cargando">Cargando…</div></main>`;
+  $('vista').innerHTML = volver(LIGAS[cod][0]) + `<div class="pestanas">${[['partidos','Partidos'],['tabla','Tabla'],['goleadores','Jugadores']].map(([t, n]) => `<button data-t="${t}" class="${t === pestana ? 'on' : ''}">${n}</button>`).join('')}</div><main id="panel"><div class="cargando">Cargando…</div></main>`;
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => { location.hash = `#/liga/${cod}/${b.dataset.t}`; });
   try {
     if (pestana === 'tabla') {
@@ -3616,8 +4066,8 @@ async function cargarMes(anio, mes, reintento = 0) {
     if (location.hash.startsWith('#/calendario') && cal.anio === anio && cal.mes === mes) { const y = window.scrollY; dibujarCalendario(); window.scrollTo(0, y); }
   }), 4000);
 }
-const ORDEN_LIGAS = ['LPF','PNA','FEDA','PRC','PRD','CAR','TDC','SCA','LIB','SUD','BSA','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','MLS','LMX',
-  'CL','UEL','UECL','PL','PD','SA','BL1','FL1','PPL','DED','ELC','FAC','CDR','CIT','DFB','CDF','SAU','WC','CAM','EURO'];
+const ORDEN_LIGAS = ['LPF','LIB','SUD','CAR','CL','UEL','UECL','PL','PD','BL1','SA','FL1','PNA','BSA','PPL','DED','ELC','MLS','LMX',
+  'URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU','FAC','CDR','CIT','DFB','CDF','TDC','SCA','FEDA','PRC','PRD','WC','CAM','EURO'];
 function dibujarCalendario() {
   const km = cal.anio + '-' + cal.mes;
   if (!cal.meses[km]) {
@@ -3667,19 +4117,30 @@ function dibujarCalendario() {
 /* ---------- Jugadores: goleadores, perfil y comparador ---------- */
 const cacheGol = {};
 async function goleadores(cod) { if (!cacheGol[cod]) { const d = await pedir('/api/goleadores?liga=' + cod); if (d.calculando) return d; cacheGol[cod] = d; } return cacheGol[cod]; }
-function listaGoleadores(d, cod) {
+// Estadísticas de jugadores de una liga: goleadores, asistidores, más amarillas y más rojas, todo junto
+let STAT_TIPO = 'goleadores';
+const TIPOS_STAT = [['goleadores', 'Goleadores', 'goles', 'goles'], ['asistidores', 'Asistencias', 'asistencias', 'asist.'],
+  ['amarillas', 'Amarillas', 'amarillas', 'amarillas'], ['rojas', 'Rojas', 'rojas', 'rojas']];
+function listaGoleadores(d, cod, contenedor) {
   cacheGol[cod] = d;
-  if (d.calculando) { delete cacheGol[cod]; return '<div class="tarjeta aviso">Estamos contando los goles de todos los partidos del torneo. En unos minutos aparece la tabla.</div>'; }
-  if (!d.goleadores.length) return `<div class="tarjeta aviso">${HL.includes(cod) && !CON_GOL.includes(cod) ? 'La tabla de goleadores de este torneo llega más adelante.' : 'Todavía no hay goleadores.'}</div>`;
-  return `<section class="tarjeta">${d.goleadores.map((j, i) => `<a class="jug" href="#/jugador/${cod}/${j.id}">
+  if (d.calculando) { delete cacheGol[cod]; return '<div class="tarjeta aviso">Estamos contando los goles y las tarjetas de todos los partidos del torneo. En unos minutos aparece.</div>'; }
+  const hay = TIPOS_STAT.filter(([k]) => (d[k] || []).length);
+  if (!hay.length) return `<div class="tarjeta aviso">${HL.includes(cod) && !CON_GOL.includes(cod) ? 'Las estadísticas de jugadores de este torneo llegan más adelante.' : 'Todavía no hay estadísticas de jugadores.'}</div>`;
+  if (!hay.some(([k]) => k === STAT_TIPO)) STAT_TIPO = hay[0][0];
+  const [k, , campo, unidad] = TIPOS_STAT.find(([x]) => x === STAT_TIPO);
+  const icono = { goleadores: '⚽', asistidores: '👟', amarillas: '<i class="tj"></i>', rojas: '<i class="tj roja"></i>' }[k];
+  setTimeout(() => document.querySelectorAll('[data-stat]').forEach(b => b.onclick = () => {
+    STAT_TIPO = b.dataset.stat; const el = b.closest('.stats-jug'); if (el) el.outerHTML = listaGoleadores(d, cod); }), 0);
+  return `<div class="stats-jug"><div class="chips" style="margin-bottom:10px">${hay.map(([x, nom]) => `<button class="chip ${x === k ? 'on' : ''}" data-stat="${x}">${nom}</button>`).join('')}</div>
+    <section class="tarjeta">${d[k].map((j, i) => `<a class="jug" href="#/jugador/${cod}/${j.id}">
     <span class="pos ${i < 3 ? 'top' : ''}">${i + 1}</span>${caraHTML(j)}
     <span style="min-width:0"><b class="nom" style="display:block;font-size:14px">${esc(j.nombre)}</b><small style="color:var(--suave);display:flex;align-items:center;gap:6px">${escudo(j.equipo)}${esc(j.equipo.nombre)}</small></span>
-    <span style="text-align:right"><span class="goles">${j.goles}</span><br><small style="color:var(--suave)">${j.asistencias} asist.</small></span></a>`).join('')}</section>`;
+    <span style="text-align:right"><span class="goles">${icono} ${j[campo]}</span><br><small style="color:var(--suave)">${unidad}</small></span></a>`).join('')}</section></div>`;
 }
 let ligaJug = LIGAS.LPF ? 'LPF' : 'PD';
 function ligasGol() { return CON_GOL.filter(c => LIGAS[c]).concat(Object.keys(LIGAS).filter(c => !HL.includes(c))); }
 async function vistaJugadores() {
-  $('vista').innerHTML = volver('Goleadores') + `<main><div class="chips">${ligasGol().map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
+  $('vista').innerHTML = volver('Estadísticas de jugadores') + `<main><div class="chips">${ligasGol().map(c => `<button class="chip ${c === ligaJug ? 'on' : ''}" data-l="${c}">${esc(LIGAS[c][0])}</button>`).join('')}</div>
     <a class="boton sec" href="#/comparar">Comparar dos jugadores</a><div id="lista"><div class="cargando">Cargando…</div></div></main>`;
   document.querySelectorAll('[data-l]').forEach(b => b.onclick = () => { ligaJug = b.dataset.l; vistaJugadores(); });
   try { $('lista').innerHTML = listaGoleadores(await goleadores(ligaJug), ligaJug); cargarFotos($('lista')); } catch (e) { $('lista').innerHTML = error(e); }
@@ -3689,7 +4150,7 @@ const POS = { Offence:'Delantero', Midfield:'Mediocampista', Defence:'Defensor',
 async function vistaJugador(cod, id) {
   $('vista').innerHTML = volver('Jugador', '#/jugadores') + '<div class="cargando">Cargando…</div>';
   let d; try { d = await goleadores(cod); } catch (e) { $('vista').innerHTML = volver('Jugador') + `<main>${error(e)}</main>`; return; }
-  const j = d.goleadores.find(x => String(x.id) === String(id));
+  const j = [...d.goleadores, ...(d.asistidores || []), ...(d.amarillas || []), ...(d.rojas || [])].find(x => String(x.id) === String(id));
   if (!j) { $('vista').innerHTML = volver('Jugador') + '<main><div class="tarjeta aviso">No encontramos al jugador.</div></main>'; return; }
   const gpp = j.partidos ? (j.goles / j.partidos).toFixed(2).replace('.', ',') : '-';
   $('vista').innerHTML = volver('Jugador', '#/jugadores') + `<section style="background:var(--negro);padding:6px 16px 18px;border-bottom:1px solid var(--linea);display:flex;flex-direction:column;gap:16px">
@@ -3699,7 +4160,7 @@ async function vistaJugador(cod, id) {
       <div class="datos3"><div><small>Nacionalidad</small><b>${esc(j.nacionalidad || '-')}</b></div><div><small>Edad</small><b>${edad(j.nacimiento)}</b></div><div><small>Posición</small><b>${esc(POS[j.posicion] || j.posicion || '-')}</b></div></div></section>
     <main><section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">${esc(d.nombre)} · temporada actual</h2>
       <div class="datos3"><div><small>Goles</small><b>${j.goles}</b></div><div><small>Asistencias</small><b>${j.asistencias}</b></div><div><small>Partidos</small><b>${j.partidos}</b></div>
-      <div><small>Penales</small><b>${j.penales}</b></div><div><small>Goles por partido</small><b>${gpp}</b></div><div><small>Ranking</small><b>${d.goleadores.indexOf(j) + 1}º</b></div></div></section>
+      <div><small>Penales</small><b>${j.penales}</b></div><div><small>Goles por partido</small><b>${gpp}</b></div><div><small>Ranking</small><b>${d.goleadores.indexOf(j) >= 0 ? (d.goleadores.indexOf(j) + 1) + "º" : "-"}</b></div></div></section>
       <a class="boton" href="#/comparar/${cod}/${j.id}">Comparar con otro jugador</a>
       <div id="extra" style="display:flex;flex-direction:column;gap:14px"><div class="cargando">Buscando foto y trayectoria…</div></div></main>`;
   bloqueJugadorExtra(j.nombre, 'extra');
@@ -4291,6 +4752,12 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_jugador_extra(q["nombre"]))
         elif url.path == "/api/proximos" and re.fullmatch(r"h?\d{1,12}", q.get("equipo", "")):
             self.json(lambda: datos_proximos(q["equipo"]))
+        elif url.path == "/api/escudos" and 0 < len(q.get("nombres", "")) <= 1200:
+            self.json(lambda: datos_escudos(q["nombres"].split("|")))
+        elif url.path == "/api/hl_muestra" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
+            self.json(lambda: hl_muestra(q["id"][1:]))
+        elif url.path == "/api/jugadores_partido" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
+            self.json(lambda: datos_jugadores_partido(q["id"][1:]))
         elif url.path == "/api/estadisticas" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
             self.json(lambda: datos_estadisticas_hl(q["id"][1:]))
         elif url.path == "/api/diagnostico":
