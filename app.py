@@ -3152,30 +3152,27 @@ nav.abajo .on { color:var(--azul); }
 .mini-eq { display:inline-flex; align-items:center; gap:6px; } .mini-eq img { width:20px; height:20px; object-fit:contain; }
 .mm2 { overflow:hidden; }
 .mm2-cab { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid var(--linea); }
-.mm2-eq { display:flex; align-items:center; gap:8px; padding:12px 14px; font-size:13.5px; border-top:3px solid var(--ce); }
+.mm2-eq { display:flex; align-items:center; gap:8px; padding:12px 14px; font-size:13.5px; }
 .mm2-eq.der { justify-content:flex-end; text-align:right; }
 .mm2-eq img { width:22px; height:22px; object-fit:contain; }
-.mm2-cuerpo { position:relative; padding:6px 0 10px; }
-.mm2-cuerpo::before { content:''; position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px; background:linear-gradient(var(--linea), #22324F 10%, #22324F 90%, var(--linea)); }
-.mm2-fila { position:relative; display:grid; grid-template-columns:1fr 44px 1fr; align-items:center; padding:4px 6px; }
-.mm2-min { justify-self:center; z-index:1; min-width:38px; text-align:center; font-size:11.5px; font-weight:800; font-variant-numeric:tabular-nums; color:#EEF2F7; background:#0B1220; border:1.5px solid #2A3A5C; border-radius:999px; padding:4px 6px; }
-.mm2-card { display:flex; align-items:center; gap:8px; padding:8px 9px; border-radius:10px; background:#0F1A2E; border:1px solid #1C2B47; min-width:0; }
-.mm2-card.izq { border-right:3px solid var(--ce); flex-direction:row-reverse; text-align:right; }
+.mm2-cuerpo { position:relative; padding:4px 0 8px; }
+.mm2-cuerpo::before { content:''; position:absolute; left:50%; top:0; bottom:0; width:1px; background:#24324A; }
+.mm2-fila { position:relative; display:grid; grid-template-columns:1fr 44px 1fr; align-items:center; padding:7px 8px; border-bottom:1px solid rgba(255,255,255,.035); }
+.mm2-min { justify-self:center; z-index:1; min-width:38px; text-align:center; font-size:11.5px; font-weight:700; font-variant-numeric:tabular-nums; color:#C7D2E0; background:var(--tarj); padding:2px 4px; }
+.mm2-card { display:flex; align-items:center; gap:9px; padding:2px 4px; min-width:0; }
+.mm2-card.izq { flex-direction:row-reverse; text-align:right; }
 .mm2-card.izq small { justify-content:flex-end; }
-.mm2-card.der { border-left:3px solid var(--ce); }
-.mm2-card.gol { background:linear-gradient(90deg, rgba(61,214,140,.10), #0F1A2E 70%); border-color:#245C44; }
-.mm2-card.izq.gol { background:linear-gradient(270deg, rgba(61,214,140,.10), #0F1A2E 70%); }
-.mm2-ic { flex:none; width:22px; height:22px; } .mm2-ic svg { width:22px; height:22px; display:block; }
+.mm2-ic { flex:none; width:18px; height:18px; opacity:.95; } .mm2-ic svg { width:18px; height:18px; display:block; }
 .mm2-txt { display:flex; flex-direction:column; min-width:0; }
-.mm2-txt small { display:flex; gap:6px; align-items:center; font-size:9.5px; font-weight:800; letter-spacing:.8px; text-transform:uppercase; color:#8E9AAE; }
-.mm2-nom { font-size:13px; font-weight:700; color:#EEF2F7; line-height:1.25; overflow-wrap:anywhere; }
-.mm2-extra { font-size:11.5px; color:#9FB3CF; margin-top:1px; }
-.mm2-in { color:#3DD68C; font-size:10px; } .mm2-out { color:#FF6B6B; font-size:10px; }
-.mm2-res { font-size:10.5px; font-weight:900; color:#06140C; background:#3DD68C; border-radius:4px; padding:1px 5px; letter-spacing:0; font-variant-numeric:tabular-nums; }
-.mm2-sep { position:relative; z-index:1; text-align:center; margin:8px 0; }
-.mm2-sep span { display:inline-block; font-size:10.5px; font-weight:800; letter-spacing:1.2px; text-transform:uppercase; color:#C7D2E0; background:#16233B; border:1px solid #2A3A5C; padding:5px 12px; border-radius:999px; }
-.mm2-sep.fin span { background:#EEF2F7; color:#0B1220; border-color:#EEF2F7; }
-.mm2-sep.vivo span { background:rgba(255,59,59,.15); color:#FF6B6B; border-color:#5C2430; }
+.mm2-txt small { display:flex; gap:6px; align-items:center; font-size:10px; font-weight:700; letter-spacing:.6px; text-transform:uppercase; color:#7F8CA3; }
+.mm2-nom { font-size:13px; font-weight:600; color:#E6EBF2; line-height:1.3; overflow-wrap:anywhere; }
+.mm2-card.gol .mm2-nom { font-weight:800; color:#FFFFFF; }
+.mm2-extra { font-size:11.5px; color:#8E9AAE; margin-top:1px; }
+.mm2-in, .mm2-out { color:#8E9AAE; font-size:9px; }
+.mm2-res { font-size:10.5px; font-weight:800; color:#C7D2E0; border:1px solid #3A4A66; border-radius:4px; padding:0 5px; letter-spacing:0; font-variant-numeric:tabular-nums; }
+.mm2-sep { position:relative; z-index:1; text-align:center; margin:6px 0; }
+.mm2-sep span { display:inline-block; font-size:10px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#8E9AAE; background:var(--tarj); padding:4px 12px; }
+.mm2-sep.fin span, .mm2-sep.vivo span { color:#E6EBF2; }
 .mm-cab { display:flex; justify-content:space-between; padding:12px 14px; border-bottom:1px solid var(--linea); font-size:13.5px; }
 .mm-fila { display:grid; grid-template-columns:1fr 46px 1fr; align-items:center; gap:6px; padding:8px 10px; border-top:1px solid rgba(255,255,255,.04); }
 .mm-min { text-align:center; font-size:12px; font-weight:900; color:var(--texto); background:var(--sup); border-radius:999px; padding:4px 0; }
@@ -4053,10 +4050,10 @@ const ICO = {
   amarilla: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#F5C400"/></svg>',
   roja: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#FF3B3B"/></svg>',
   doble: '<svg viewBox="0 0 24 24"><rect x="4.5" y="3" width="9" height="15" rx="2" fill="#F5C400"/><rect x="10.5" y="6" width="9" height="15" rx="2" fill="#FF3B3B"/></svg>',
-  cambio: '<svg viewBox="0 0 24 24"><path d="M8 20V6m0 0l-3.5 3.5M8 6l3.5 3.5" stroke="#3DD68C" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M16 4v14m0 0l-3.5-3.5M16 18l3.5-3.5" stroke="#FF6B6B" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>',
-  lesion: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fff"/><path d="M10 6h4v4h4v4h-4v4h-4v-4H6v-4h4z" fill="#FF3B3B"/></svg>',
-  palo: '<svg viewBox="0 0 24 24"><path d="M3 21V5h12v16" fill="none" stroke="#EEF2F7" stroke-width="2.2"/><circle cx="17" cy="7" r="4" fill="#fff" stroke="#0B1220" stroke-width="1.2"/><path d="M19.5 3.5l2-1.5M21 7h2" stroke="#F5C400" stroke-width="1.6" stroke-linecap="round"/></svg>',
-  errado: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fff"/><path d="M7.5 7.5l9 9M16.5 7.5l-9 9" stroke="#FF3B3B" stroke-width="2.6" stroke-linecap="round"/></svg>',
+  cambio: '<svg viewBox="0 0 24 24"><path d="M8 20V6m0 0l-3.5 3.5M8 6l3.5 3.5" stroke="#E6EBF2" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M16 4v14m0 0l-3.5-3.5M16 18l3.5-3.5" stroke="#7F8CA3" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg>',
+  lesion: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#C7D2E0" stroke-width="1.8"/><path d="M10.5 6.5h3v4h4v3h-4v4h-3v-4h-4v-3h4z" fill="#C7D2E0"/></svg>',
+  palo: '<svg viewBox="0 0 24 24"><path d="M3 21V5h12v16" fill="none" stroke="#EEF2F7" stroke-width="2.2"/><circle cx="17" cy="7" r="4" fill="#fff" stroke="#0B1220" stroke-width="1.2"/></svg>',
+  errado: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#C7D2E0" stroke-width="1.8"/><path d="M8 8l8 8M16 8l-8 8" stroke="#C7D2E0" stroke-width="2" stroke-linecap="round"/></svg>',
   var: '<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3" fill="#EEF2F7"/><text x="12" y="15.5" text-anchor="middle" font-family="Inter,sans-serif" font-size="8" font-weight="900" fill="#0B1220">VAR</text></svg>',
   otro: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#8E9AAE"/></svg>'
 };
@@ -4091,7 +4088,7 @@ function panelMinuto(p) {
     return sep + `<div class="mm2-fila">${loc ? tarjeta : '<span></span>'}<span class="mm2-min">${esc(e.minuto)}'</span>${loc ? '<span></span>' : tarjeta}</div>`;
   }).join('');
   return `<section class="tarjeta mm2">
-    <div class="mm2-cab"><span class="mm2-eq" style="--ce:${cL}">${escImg(p.local)}<b>${esc(p.local.nombre)}</b></span><span class="mm2-eq der" style="--ce:${cV}"><b>${esc(p.visitante.nombre)}</b>${escImg(p.visitante)}</span></div>
+    <div class="mm2-cab"><span class="mm2-eq">${escImg(p.local)}<b>${esc(p.local.nombre)}</b></span><span class="mm2-eq der"><b>${esc(p.visitante.nombre)}</b>${escImg(p.visitante)}</span></div>
     <div class="mm2-cuerpo"><div class="mm2-sep"><span>Primer tiempo</span></div>${filas}
       ${p.terminado ? `<div class="mm2-sep fin"><span>Final · ${p.gl ?? gl} - ${p.gv ?? gv}</span></div>` : p.vivo ? '<div class="mm2-sep vivo"><span>En juego</span></div>' : ''}</div></section>`;
 }
