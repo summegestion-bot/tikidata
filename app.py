@@ -3301,7 +3301,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 .cat-trivia { display:flex; flex-direction:column; align-items:center; gap:6px; padding:16px 10px; border:1px solid var(--borde); text-align:center; }
 .cat-trivia b { font-size:14px; } .cat-trivia small { font-size:11px; color:var(--suave); }
 .cat-trivia:active, .opcion-trivia:active { transform:scale(.98); }
-.niveles-trivia { display:grid; grid-template-columns:repeat(3, 1fr); gap:8px; margin-top:10px; }
+.niveles-trivia { display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; margin-top:10px; }
 .nivel-trivia { display:flex; flex-direction:column; align-items:center; gap:2px; padding:10px 4px; border-radius:10px; border:1.5px solid var(--borde); background:var(--sup); font-weight:800; font-size:13px; }
 .nivel-trivia small { font-size:10px; font-weight:600; color:var(--suave); }
 .nivel-trivia.on { border-color:var(--azul); background:var(--tarj2); box-shadow:0 0 0 1px var(--azul) inset; }
@@ -3832,7 +3832,82 @@ const PREGUNTAS = [
   ['eur', '¿Qué club ganó la Champions 2005 con la famosa remontada de Estambul?', 'Liverpool', ['Milan', 'Chelsea', 'Barcelona'], 3],
   ['est', '¿Quién ganó el Balón de Oro 2018, cortando la racha de Messi y Cristiano?', 'Luka Modrić', ['Antoine Griezmann', 'Mohamed Salah', 'Kylian Mbappé'], 3],
   ['reg', '¿Cuánto mide de ancho un arco reglamentario?', '7,32 metros', ['6 metros', '8,50 metros', '7 metros'], 3],
-  ['reg', '¿A qué distancia tienen que pararse los rivales en un tiro libre?', '9,15 metros', ['7 metros', '11 metros', '5 metros'], 3],
+  ['reg', '¿A qué distancia tienen que pararse los rivales en un tiro libre?', '9,15 metros', ['7 metros', '11 metros', '5 metros'], 3],  ['sel', '¿Qué número de camiseta usa Messi en la Selección?', '10', ['19', '30', '9'], 1],
+  ['sel', '¿Quién fue el DT de Argentina en el Mundial 2014?', 'Alejandro Sabella', ['Diego Maradona', 'Gerardo Martino', 'Jorge Sampaoli'], 2],
+  ['arg', '¿De qué ciudad son Rosario Central y Newell\'s?', 'Rosario', ['Córdoba', 'Santa Fe', 'Mendoza'], 1],
+  ['arg', '¿A qué club le dicen "El Lobo"?', 'Gimnasia y Esgrima La Plata', ['Estudiantes', 'Banfield', 'Quilmes'], 2],
+  ['arg', '¿A qué club le dicen "El Taladro"?', 'Banfield', ['Lanús', 'Talleres', 'Arsenal'], 2],
+  ['arg', '¿A qué club le dicen "El Granate"?', 'Lanús', ['Platense', 'Colón', 'Huracán'], 2],
+  ['est', '¿De qué país es Cristiano Ronaldo?', 'Portugal', ['España', 'Brasil', 'Italia'], 1],
+  ['est', '¿De qué país es Luka Modrić?', 'Croacia', ['Serbia', 'Eslovenia', 'Bosnia'], 2],
+  ['eur', '¿En qué país juega el Bayern Múnich?', 'Alemania', ['Austria', 'Suiza', 'Países Bajos'], 1],
+  ['eur', '¿En qué país juega el Manchester City?', 'Inglaterra', ['Escocia', 'Irlanda', 'Gales'], 1],
+  ['eur', '¿Cómo se llama el estadio del Bayern Múnich?', 'Allianz Arena', ['Signal Iduna Park', 'Olympiastadion', 'Veltins Arena'], 2],
+  ['eur', '¿Qué club ganó la Premier League 2015-16, la sorpresa más grande de la historia?', 'Leicester City', ['Tottenham', 'West Ham', 'Everton'], 3],
+  ['reg', '¿Qué tarjeta es una advertencia?', 'Amarilla', ['Roja', 'Verde', 'Blanca'], 1],
+  ['reg', '¿Cuánto dura como máximo el entretiempo?', '15 minutos', ['10 minutos', '20 minutos', '5 minutos'], 2],
+  ['est', '¿Cuántas Champions League ganó Cristiano Ronaldo?', '5', ['4', '6', '3'], 3],
+  ['est', '¿Cuántas Champions League ganó Messi con el Barcelona?', '4', ['3', '5', '2'], 3],
+  ['est', '¿De qué país es Mohamed Salah?', 'Egipto', ['Marruecos', 'Argelia', 'Túnez'], 3],
+  ['est', '¿Quién ganó el Balón de Oro 2022?', 'Karim Benzema', ['Lionel Messi', 'Robert Lewandowski', 'Kevin De Bruyne'], 3],
+  ['est', '¿En qué club inglés juega Erling Haaland desde 2022?', 'Manchester City', ['Manchester United', 'Liverpool', 'Chelsea'], 3],
+  ['reg', '¿Qué se cobra si la pelota entra directo al arco desde un saque de banda?', 'Saque de arco', ['Gol', 'Córner', 'Se repite el saque'], 3],
+  ['reg', '¿Hay offside si un jugador recibe directo de un saque de banda?', 'No', ['Sí', 'Solo en el área', 'Solo en el segundo tiempo'], 3],
+  ['reg', '¿Vale un gol hecho directo de saque de arco en el arco rival?', 'Sí', ['No', 'Solo si lo toca otro jugador', 'Solo en alargue'], 3],
+  ['reg', '¿Cuántos árbitros asistentes (de línea) hay en un partido?', '2', ['1', '3', '4'], 2],
+  ['sel', '¿Contra qué selección perdió Argentina la final del Mundial 1990?', 'Alemania Federal', ['Italia', 'Brasil', 'Países Bajos'], 3],
+  ['sel', '¿A qué selección le ganó Argentina por penales en los cuartos de final de Qatar 2022?', 'Países Bajos', ['Croacia', 'Australia', 'Polonia'], 3],
+  ['sel', '¿Cómo terminó la final del Mundial 2022 antes de los penales?', '3 a 3', ['2 a 2', '1 a 1', '3 a 2'], 3],
+  ['eur', '¿Qué club ganó la Champions 2010 con José Mourinho como DT?', 'Inter', ['Chelsea', 'Real Madrid', 'Porto'], 3],
+  ['eur', '¿Qué club inglés ganó más Champions League?', 'Liverpool', ['Manchester United', 'Chelsea', 'Arsenal'], 3],
+  ['eur', '¿Contra qué club perdió el Borussia Dortmund la final de la Champions 2013?', 'Bayern Múnich', ['Real Madrid', 'Barcelona', 'Juventus'], 3],
+  // ---------- Nivel IMPOSIBLE (para los que saben todo) ----------
+  ['sel', '¿Quién fue el goleador del Mundial 1930?', 'Guillermo Stábile', ['Pedro Cea', 'Héctor Scarone', 'Carlos Peucelle'], 4],
+  ['sel', '¿Quién hizo el gol del triunfo de Arabia Saudita ante Argentina en Qatar 2022?', 'Salem Al-Dawsari', ['Saleh Al-Shehri', 'Firas Al-Buraikan', 'Mohammed Al-Owais'], 4],
+  ['sel', '¿Cuántos goles hizo Messi en el Mundial 2022?', '7', ['6', '8', '5'], 4],
+  ['sel', '¿Quién fue el capitán de Argentina campeón del Mundial 1978?', 'Daniel Passarella', ['Mario Kempes', 'Ubaldo Fillol', 'Américo Gallego'], 4],
+  ['sel', '¿Quién pateó el penal del gol de Alemania en la final del Mundial 1990?', 'Andreas Brehme', ['Lothar Matthäus', 'Rudi Völler', 'Jürgen Klinsmann'], 4],
+  ['sel', '¿Cómo terminó Argentina vs Serbia y Montenegro en el Mundial 2006?', '6 a 0', ['4 a 0', '3 a 1', '5 a 1'], 4],
+  ['sel', '¿Cuántas Copas América ganó Argentina (contando la de 2024)?', '16', ['15', '14', '17'], 4],
+  ['sel', '¿Quién fue el árbitro de la final del Mundial 2022?', 'Szymon Marciniak', ['Daniele Orsato', 'Wilton Sampaio', 'Facundo Tello'], 4],
+  ['sel', '¿Cuántos partidos de Mundiales jugó Messi hasta Qatar 2022 (récord)?', '26', ['25', '24', '23'], 4],
+  ['sel', '¿Quién hizo el 1 a 0 de Argentina, de cabeza, en la final del Mundial 1986?', 'José Luis Brown', ['Jorge Valdano', 'Oscar Ruggeri', 'Héctor Enrique'], 4],
+  ['arg', '¿Qué club ganó la primera Copa Libertadores, en 1960?', 'Peñarol', ['Independiente', 'Santos', 'Nacional'], 4],
+  ['arg', '¿Quién es el máximo goleador de la era profesional del fútbol argentino?', 'Arsenio Erico', ['Ángel Labruna', 'Martín Palermo', 'Herminio Masantonio'], 4],
+  ['arg', '¿Quién es el máximo goleador de la historia de River?', 'Ángel Labruna', ['Bernabé Ferreyra', 'Oscar Más', 'Enzo Francescoli'], 4],
+  ['arg', '¿Quién es el máximo goleador de la historia de Boca?', 'Martín Palermo', ['Roberto Cherro', 'Francisco Varallo', 'Domingo Tarasconi'], 4],
+  ['arg', '¿Contra qué equipo jugó River la Promoción en la que descendió en 2011?', 'Belgrano', ['Talleres', 'Quilmes', 'Rosario Central'], 4],
+  ['arg', '¿Quién hizo el 3 a 1 de River en la final de Madrid 2018 contra Boca?', 'Gonzalo "Pity" Martínez', ['Juan Fernando Quintero', 'Lucas Pratto', 'Rafael Santos Borré'], 4],
+  ['arg', '¿Qué club ganó tres Libertadores seguidas entre 1968 y 1970?', 'Estudiantes de La Plata', ['Independiente', 'Racing', 'Boca Juniors'], 4],
+  ['arg', '¿Contra qué club ganó Racing la Copa Intercontinental de 1967?', 'Celtic', ['Manchester United', 'Inter', 'Real Madrid'], 4],
+  ['arg', '¿Quién es el máximo goleador de la historia de la Copa Libertadores?', 'Alberto Spencer', ['Pedro Rocha', 'Daniel Onega', 'Fernando Morena'], 4],
+  ['arg', '¿Qué club argentino ganó la primera Copa Sudamericana, en 2002?', 'San Lorenzo', ['Boca Juniors', 'River Plate', 'Lanús'], 4],
+  ['est', '¿Cuántos goles hizo Messi en el año 2012 (récord mundial)?', '91', ['86', '79', '96'], 4],
+  ['est', '¿Quién ganó el Balón de Oro 2006?', 'Fabio Cannavaro', ['Gianluigi Buffon', 'Thierry Henry', 'Ronaldinho'], 4],
+  ['est', '¿Quién es el único arquero que ganó el Balón de Oro?', 'Lev Yashin', ['Gianluigi Buffon', 'Manuel Neuer', 'Oliver Kahn'], 4],
+  ['est', '¿Quién hizo 13 goles en un solo Mundial, en 1958?', 'Just Fontaine', ['Gerd Müller', 'Pelé', 'Sándor Kocsis'], 4],
+  ['est', '¿Cuántos goles hizo Miroslav Klose en Mundiales (récord)?', '16', ['15', '14', '17'], 4],
+  ['est', '¿En qué club debutó Cristiano Ronaldo como profesional?', 'Sporting de Lisboa', ['Benfica', 'Porto', 'Nacional de Madeira'], 4],
+  ['est', '¿Quién ganó el Balón de Oro 2024?', 'Rodri', ['Vinícius Júnior', 'Jude Bellingham', 'Kylian Mbappé'], 4],
+  ['est', '¿En qué club argentino debutó Ángel Di María?', 'Rosario Central', ['Newell\'s', 'Talleres', 'Vélez'], 4],
+  ['est', '¿Contra qué equipo debutó Messi en partido oficial con el Barcelona, en 2004?', 'Espanyol', ['Albacete', 'Real Madrid', 'Sevilla'], 4],
+  ['eur', '¿Qué club ganó la primera Copa de Europa, en 1956?', 'Real Madrid', ['Benfica', 'Milan', 'Stade de Reims'], 4],
+  ['eur', '¿Qué club ganó la Champions League 2004?', 'Porto', ['Mónaco', 'Deportivo La Coruña', 'Chelsea'], 4],
+  ['eur', '¿Quién hizo el gol del triunfo del Manchester United en la final de la Champions 1999?', 'Ole Gunnar Solskjær', ['Teddy Sheringham', 'David Beckham', 'Dwight Yorke'], 4],
+  ['eur', '¿Qué club fue campeón invicto de la Premier League 2003-04?', 'Arsenal', ['Chelsea', 'Manchester United', 'Liverpool'], 4],
+  ['eur', '¿Quién es el máximo goleador de la historia de la Premier League?', 'Alan Shearer', ['Wayne Rooney', 'Harry Kane', 'Thierry Henry'], 4],
+  ['eur', '¿Qué club ganó más veces la Europa League?', 'Sevilla', ['Liverpool', 'Inter', 'Atlético de Madrid'], 4],
+  ['eur', '¿Qué club ganó la Champions 2012 en Múnich, contra el Bayern?', 'Chelsea', ['Borussia Dortmund', 'Barcelona', 'Real Madrid'], 4],
+  ['eur', '¿Por cuánto le ganó el PSG al Inter en la final de la Champions 2025?', '5 a 0', ['3 a 0', '4 a 1', '2 a 0'], 4],
+  ['reg', '¿Cuánto mide de alto un arco reglamentario?', '2,44 metros', ['2,20 metros', '2,50 metros', '2,30 metros'], 4],
+  ['reg', '¿Cuánto mide el radio del círculo central?', '9,15 metros', ['10 metros', '8 metros', '11 metros'], 4],
+  ['reg', '¿Cuánto mide la circunferencia de una pelota reglamentaria?', 'Entre 68 y 70 cm', ['Entre 60 y 62 cm', 'Entre 72 y 74 cm', 'Entre 64 y 66 cm'], 4],
+  ['reg', '¿Con cuántos jugadores como mínimo puede seguir un partido?', '7', ['6', '8', '9'], 4],
+  ['reg', '¿En qué Mundial se usó el VAR por primera vez?', '2018', ['2014', '2022', '2010'], 4],
+  ['reg', '¿Desde qué año el arquero no puede agarrar con la mano un pase atrás de un compañero?', '1992', ['1986', '1998', '1990'], 4],
+  ['reg', '¿Cuánto pesa una pelota reglamentaria?', 'Entre 410 y 450 gramos', ['Entre 300 y 350 gramos', 'Entre 500 y 550 gramos', 'Entre 360 y 400 gramos'], 4],
+  ['reg', '¿Cuánto mide el área grande desde la línea del arco hacia adentro?', '16,5 metros', ['11 metros', '18 metros', '20 metros'], 4],
+  ['reg', '¿Cuánto mide el área chica desde la línea del arco hacia adentro?', '5,5 metros', ['6 metros', '4 metros', '7 metros'], 4],
 ];
 const CATS_TRIVIA = { todas: ['Todas mezcladas', '🎲'], sel: ['Selección y Mundiales', '🇦🇷'], arg: ['Fútbol argentino', '🏟️'],
                       est: ['Estrellas', '⭐'], eur: ['Europa', '🌍'], reg: ['Reglamento', '📏'] };
@@ -3840,6 +3915,7 @@ const NIVELES_TRIVIA = {
   facil: { nombre: 'Fácil', emoji: '🟢', segundos: 20, multi: 1, usa: [1], relleno: [2] },
   medio: { nombre: 'Medio', emoji: '🟡', segundos: 15, multi: 1.5, usa: [2], relleno: [1, 3] },
   dificil: { nombre: 'Difícil', emoji: '🔴', segundos: 10, multi: 2, usa: [3], relleno: [2] },
+  imposible: { nombre: 'Imposible', emoji: '💀', segundos: 8, multi: 3, usa: [4], relleno: [3] },
 };
 let trivia = null;
 function mezclar(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
@@ -3864,7 +3940,13 @@ function empezarTrivia(cat, nivel) {
   const nv = NIVELES_TRIVIA[nivel] || NIVELES_TRIVIA.facil;
   const pool = PREGUNTAS.filter(p => cat === 'todas' || p[0] === cat);
   // primero preguntas del nivel elegido; si no alcanzan, se completa con las del nivel de al lado
-  const elegidas = mezclar(pool.filter(p => nv.usa.includes(p[4]))).concat(mezclar(pool.filter(p => nv.relleno.includes(p[4])))).slice(0, 10);
+  // las preguntas que salieron hace poco van al final, así cada partida trae preguntas distintas
+  const vistas = leer('tiki_trivia_vistas', []);
+  const nueva = (p) => !vistas.includes(p[1]);
+  const delNivel = mezclar(pool.filter(p => nv.usa.includes(p[4]))), deAlLado = mezclar(pool.filter(p => nv.relleno.includes(p[4])));
+  // orden: del nivel sin repetir, del nivel de al lado sin repetir, y recién después las repetidas
+  const elegidas = delNivel.filter(nueva).concat(deAlLado.filter(nueva), delNivel.filter(p => !nueva(p)), deAlLado.filter(p => !nueva(p))).slice(0, 10);
+  guardar('tiki_trivia_vistas', vistas.filter(v => !elegidas.some(p => p[1] === v)).concat(elegidas.map(p => p[1])).slice(-200));
   trivia = { cat, nivel, nv, preguntas: mezclar(elegidas), i: 0, puntos: 0, aciertos: 0, racha: 0, reloj: null };
   mostrarPregunta();
 }
