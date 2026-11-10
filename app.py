@@ -1214,6 +1214,49 @@ def _info_jugador(d):
             "edad": edad, "altura": medida(plano.get("height"), "m"), "peso": medida(plano.get("weight"), "kg")}
 
 
+def _crudo_fd(id_num):
+    """El partido de football-data tal como vino en las listas ya guardadas (para no gastar pedidos)."""
+    for k, (t, d) in list(_memoria.items()):
+        if k.startswith("/matches?") or k.startswith("/competitions/"):
+            for m in (d or {}).get("matches", []) if isinstance(d, dict) else []:
+                if str(m.get("id")) == str(id_num):
+                    return m
+    return None
+
+
+def resumen_goles(id_txt):
+    """Quién hizo los goles y cuántas rojas tuvo cada equipo, para mostrarlo en la lista de partidos."""
+    if id_txt.startswith("h"):
+        d = datos_partido_hl(id_txt[1:])
+        loc = d["local"]["id"]
+    else:
+        crudo = _crudo_fd(id_txt)
+        enc = buscar_en_hl(crudo) if crudo else None
+        if not enc:
+            return None
+        hid, inv = enc
+        d = datos_partido_hl(str(hid))
+        loc = d["visitante"]["id"] if inv else d["local"]["id"]
+    goles = [[g["minuto"], g["jugador"], "L" if g["equipo"] == loc else "V", g["tipo"]] for g in d.get("goles", []) if g.get("jugador")]
+    rojas = {"L": 0, "V": 0}
+    for e in d.get("eventos", []):
+        if re.search(r"red card|second yellow|yellow.?red", e.get("tipo") or "", re.I):
+            rojas["L" if e["equipo"] == loc else "V"] += 1
+    return {"g": goles, "rL": rojas["L"], "rV": rojas["V"]}
+
+
+def datos_resumen_goles(ids):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def uno(i):
+        try:
+            return i, resumen_goles(i)
+        except Exception:
+            return i, None
+    with ThreadPoolExecutor(8) as ex:
+        return {i: r for i, r in ex.map(uno, ids[:30]) if r}
+
+
 def hl_muestra(id_num):
     """Revisión: un pedacito de lo que devuelve Highlightly para un partido (para ajustar formación, puntajes y fichas)."""
     def corto(x, n=1500):
@@ -2840,8 +2883,21 @@ def _traer_todas():
     return grupos
 
 
+def noticias_sin_esperar():
+    """Las noticias nunca hacen esperar: si están viejas se muestran igual y se actualizan por detrás;
+    si todavía no hay ninguna, se empiezan a buscar y la página vuelve a preguntar en unos segundos."""
+    viejas = _noticias["lista"]
+    if viejas and time.time() - _noticias["t"] < 900:
+        return viejas
+    if not _candado_noticias.locked():
+        threading.Thread(target=traer_todas, daemon=True).start()
+    return viejas or None
+
+
 def datos_noticias(prefs=""):
-    grupos = traer_todas()
+    grupos = noticias_sin_esperar()
+    if grupos is None:
+        return {"destacadas": [], "noticias": [], "temas": [], "preparando": True}
     elegidos_temas = [p for p in prefs.split(",") if p in TEMAS]
     if elegidos_temas:
         parte = 85 // len(elegidos_temas)
@@ -2953,6 +3009,12 @@ main { padding:14px 10px; display:flex; flex-direction:column; gap:14px; }
 .emb { width:26px; height:26px; border-radius:7px; background:#fff; padding:2px; object-fit:contain; }
 .fila { display:grid; grid-template-columns:44px minmax(0,1fr) 62px minmax(0,1fr); align-items:center; gap:6px;
   padding:11px 10px 11px 6px; border-top:1px solid var(--linea); }
+.fila-goles { display:grid; grid-template-columns:44px minmax(0,1fr) 62px minmax(0,1fr); gap:6px; padding:0 10px 0 6px; margin-top:-6px; }
+.fila-goles:empty { display:none; }
+.fila-goles .fg { display:flex; flex-wrap:wrap; gap:2px 8px; font-size:11.5px; color:#AEBBD0; padding-bottom:9px; line-height:1.35; }
+.fila-goles .fg.izq { justify-content:flex-end; text-align:right; }
+.fila-goles em { font-style:normal; color:#3DD68C; font-weight:700; }
+.fg-roja { display:inline-flex; gap:2px; align-items:center; } .fg-roja i { display:block; width:7px; height:10px; border-radius:1.5px; background:#FF3B3B; }
 .fila .st { font-size:12px; font-weight:700; text-align:center; color:#C7D2E0; }
 .fila .st.vivo { color:var(--vivo); }
 .fila .eq { display:flex; align-items:center; gap:6px; min-width:0; font-size:13px; font-weight:700; }
@@ -3088,6 +3150,32 @@ nav.abajo .on { color:var(--azul); }
 .fjug-d { text-align:right; } .fjug-d small { font-size:12px; color:var(--suave); font-weight:700; line-height:1.45; }
 .chip img { width:18px; height:18px; object-fit:contain; vertical-align:-4px; }
 .mini-eq { display:inline-flex; align-items:center; gap:6px; } .mini-eq img { width:20px; height:20px; object-fit:contain; }
+.mm2 { overflow:hidden; }
+.mm2-cab { display:grid; grid-template-columns:1fr 1fr; border-bottom:1px solid var(--linea); }
+.mm2-eq { display:flex; align-items:center; gap:8px; padding:12px 14px; font-size:13.5px; border-top:3px solid var(--ce); }
+.mm2-eq.der { justify-content:flex-end; text-align:right; }
+.mm2-eq img { width:22px; height:22px; object-fit:contain; }
+.mm2-cuerpo { position:relative; padding:6px 0 10px; }
+.mm2-cuerpo::before { content:''; position:absolute; left:50%; top:0; bottom:0; width:2px; margin-left:-1px; background:linear-gradient(var(--linea), #22324F 10%, #22324F 90%, var(--linea)); }
+.mm2-fila { position:relative; display:grid; grid-template-columns:1fr 44px 1fr; align-items:center; padding:4px 6px; }
+.mm2-min { justify-self:center; z-index:1; min-width:38px; text-align:center; font-size:11.5px; font-weight:800; font-variant-numeric:tabular-nums; color:#EEF2F7; background:#0B1220; border:1.5px solid #2A3A5C; border-radius:999px; padding:4px 6px; }
+.mm2-card { display:flex; align-items:center; gap:8px; padding:8px 9px; border-radius:10px; background:#0F1A2E; border:1px solid #1C2B47; min-width:0; }
+.mm2-card.izq { border-right:3px solid var(--ce); flex-direction:row-reverse; text-align:right; }
+.mm2-card.izq small { justify-content:flex-end; }
+.mm2-card.der { border-left:3px solid var(--ce); }
+.mm2-card.gol { background:linear-gradient(90deg, rgba(61,214,140,.10), #0F1A2E 70%); border-color:#245C44; }
+.mm2-card.izq.gol { background:linear-gradient(270deg, rgba(61,214,140,.10), #0F1A2E 70%); }
+.mm2-ic { flex:none; width:22px; height:22px; } .mm2-ic svg { width:22px; height:22px; display:block; }
+.mm2-txt { display:flex; flex-direction:column; min-width:0; }
+.mm2-txt small { display:flex; gap:6px; align-items:center; font-size:9.5px; font-weight:800; letter-spacing:.8px; text-transform:uppercase; color:#8E9AAE; }
+.mm2-nom { font-size:13px; font-weight:700; color:#EEF2F7; line-height:1.25; overflow-wrap:anywhere; }
+.mm2-extra { font-size:11.5px; color:#9FB3CF; margin-top:1px; }
+.mm2-in { color:#3DD68C; font-size:10px; } .mm2-out { color:#FF6B6B; font-size:10px; }
+.mm2-res { font-size:10.5px; font-weight:900; color:#06140C; background:#3DD68C; border-radius:4px; padding:1px 5px; letter-spacing:0; font-variant-numeric:tabular-nums; }
+.mm2-sep { position:relative; z-index:1; text-align:center; margin:8px 0; }
+.mm2-sep span { display:inline-block; font-size:10.5px; font-weight:800; letter-spacing:1.2px; text-transform:uppercase; color:#C7D2E0; background:#16233B; border:1px solid #2A3A5C; padding:5px 12px; border-radius:999px; }
+.mm2-sep.fin span { background:#EEF2F7; color:#0B1220; border-color:#EEF2F7; }
+.mm2-sep.vivo span { background:rgba(255,59,59,.15); color:#FF6B6B; border-color:#5C2430; }
 .mm-cab { display:flex; justify-content:space-between; padding:12px 14px; border-bottom:1px solid var(--linea); font-size:13.5px; }
 .mm-fila { display:grid; grid-template-columns:1fr 46px 1fr; align-items:center; gap:6px; padding:8px 10px; border-top:1px solid rgba(255,255,255,.04); }
 .mm-min { text-align:center; font-size:12px; font-weight:900; color:var(--texto); background:var(--sup); border-radius:999px; padding:4px 0; }
@@ -3322,7 +3410,7 @@ async function pedirDeVerdad(ruta, intento = 0) {
     if (r.status >= 500 && intento < 2) { await new Promise(ok => setTimeout(ok, 2000)); return pedirDeVerdad(ruta, intento + 1); }
     throw new Error(d.error || 'Error desconocido');
   }
-  if (FRESCO.some(([re]) => re.test(ruta)) && !d.calculando && !(d.faltan && d.faltan.length)) memGuardar(ruta, d);
+  if (FRESCO.some(([re]) => re.test(ruta)) && !d.calculando && !d.preparando && !(/^\/api\/noticias/.test(ruta) && !(d.noticias || []).length && !(d.destacadas || []).length) && !(d.faltan && d.faltan.length)) memGuardar(ruta, d);
   return d;
 }
 function escImg(t) { const u = t && (t.escudo || (typeof ESC_CACHE !== 'undefined' && ESC_CACHE[t.nombre])); return u ? `<img src="${esc(u)}" alt="" loading="lazy">` : ''; }
@@ -3371,8 +3459,38 @@ function filaPartido(p, mostrarLiga=false) {
     <span class="eq der ${pl ? 'pierde' : ''}"><span class="nom">${esc(p.local.nombre)}</span>${escudo(p.local)}</span>
     <span class="marc ${p.vivo ? 'vivo' : jugado ? 'jug' : ''}">${jugado ? p.gl + ' - ' + p.gv : 'vs'}</span>
     <span class="eq ${pv ? 'pierde' : ''}">${escudo(p.visitante)}<span class="nom">${esc(p.visitante.nombre)}</span></span>
-  </a>`;
+  </a>${jugado && (p.terminado || p.vivo) ? `<div class="fila-goles" data-goles="${p.id}"${p.vivo ? ' data-vivo="1"' : ''}>${RES_GOLES[p.id] ? htmlGolesFila(RES_GOLES[p.id].d) : ''}</div>` : ''}`;
 }
+// Goleadores y rojas debajo de cada partido de la lista (sin tener que entrar al partido)
+const RES_GOLES = {};
+function htmlGolesFila(r) {
+  if (!r) return '';
+  const lado = (l) => r.g.filter(g => g[2] === l).map(g => `<span><em>${esc(g[0])}'</em> ${esc(String(g[1]).split(' ').slice(-1)[0])}${g[3] === 'PENALTY' ? ' (p)' : g[3] === 'OWN' ? ' (e.c.)' : ''}</span>`).join('');
+  const roja = (n) => n ? `<span class="fg-roja">${'<i></i>'.repeat(n)}</span>` : '';
+  if (!r.g.length && !r.rL && !r.rV) return '';
+  if (!r.g.length) return '';
+  return `<span></span><span class="fg izq">${lado('L')}</span><span></span><span class="fg">${lado('V')}</span>`;
+}
+function ponerRojas(id, r) {
+  const a = document.querySelector(`a.fila[href="#/partido/${id}"]`); if (!a || !r) return;
+  const eqs = a.querySelectorAll('.eq');
+  [[eqs[0], r.rL], [eqs[1], r.rV]].forEach(([el, n]) => { if (el && n && !el.querySelector('.fg-roja')) el.insertAdjacentHTML(el === eqs[0] ? 'afterbegin' : 'beforeend', `<span class="fg-roja">${'<i></i>'.repeat(n)}</span>`); });
+}
+let buscandoGoles = false;
+function completarGolesFilas() {
+  if (buscandoGoles) return;
+  const ahora = Date.now();
+  const els = [...document.querySelectorAll('[data-goles]')];
+  els.forEach(el => { const x = RES_GOLES[el.dataset.goles]; if (x) ponerRojas(el.dataset.goles, x.d); });
+  const faltan = [...new Set(els.map(e => e.dataset.goles))].filter(id => { const x = RES_GOLES[id]; return !x || (x.vivo && ahora - x.t > 60000); }).slice(0, 30);
+  if (!faltan.length) return;
+  buscandoGoles = true;
+  fetch('/api/resumen_goles?ids=' + faltan.join(',')).then(r => r.ok ? r.json() : {}).then(d => {
+    faltan.forEach(id => { const vivo = !!document.querySelector(`[data-goles="${id}"][data-vivo]`); RES_GOLES[id] = { d: d[id] || null, t: Date.now(), vivo }; });
+    document.querySelectorAll('[data-goles]').forEach(el => { const x = RES_GOLES[el.dataset.goles]; if (x) { el.innerHTML = htmlGolesFila(x.d); ponerRojas(el.dataset.goles, x.d); } });
+  }).catch(() => {}).finally(() => { buscandoGoles = false; });
+}
+new MutationObserver(() => { clearTimeout(completarGolesFilas.t); completarGolesFilas.t = setTimeout(completarGolesFilas, 350); }).observe(document.body, { childList: true, subtree: true });
 function error(e) { return `<div class="tarjeta aviso">No se pudo cargar.<br>${esc(e.message)}</div>`; }
 function volver(titulo, destino='#/') {
   return `<div class="volver"><a class="icono" href="${destino}" aria-label="Volver">${svg(ICON.atras)}</a><b>${esc(titulo)}</b></div>`;
@@ -3501,7 +3619,14 @@ async function cargarNoticias() {
   const el = $('noticias'); if (!el) return;
   const prefs = leer('tiki_prefs_noticias', []);
   try {
-    const d = await pedir('/api/noticias?prefs=' + encodeURIComponent(prefs.join(',')));
+    const ruta = '/api/noticias?prefs=' + encodeURIComponent(prefs.join(','));
+    let d = await pedir(ruta);
+    if (d.preparando) {
+      el.innerHTML = '<div class="cargando">Buscando las últimas noticias…</div>';
+      for (let i = 0; i < 20 && d.preparando; i++) { await new Promise(ok => setTimeout(ok, 4000)); if (!el.isConnected) return; d = await pedirDeVerdad(ruta); }
+      if (d.preparando) { el.innerHTML = '<div class="tarjeta aviso">Las noticias están tardando. Probá de nuevo en un ratito.</div>'; return; }
+      memGuardar(ruta, d);
+    }
     const todas = d.destacadas.length + d.noticias.length;
     const img = (n) => n.imagen ? `<img src="${esc(n.imagen)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : `<img src="/logo.png" alt="" style="object-fit:contain;padding:30px;opacity:.35" onerror="this.remove()">`;
     const etiqueta = (n) => n.importante ? '<span class="tema imp">IMPORTANTE</span>' : (n.tema ? `<span class="tema">${esc(n.tema)}</span>` : '');
@@ -3936,34 +4061,53 @@ async function cargarStats(p) {
   } catch (e) { el.innerHTML = error(e); }
 }
 
-/* Minuto a minuto: cada equipo de su lado, con el minuto en el medio */
-function eventoHTML(e) {
+/* Minuto a minuto: línea de tiempo en el medio, cada equipo de su lado */
+const ICO = {
+  gol: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fff"/><path d="M12 7.2l3.3 2.4-1.3 3.9h-4l-1.3-3.9z" fill="#0B1220"/><path d="M12 2v5.2M15.3 9.6l4.6-1.6M14 13.5l2.8 4.2M10 13.5l-2.8 4.2M8.7 9.6L4.1 8" stroke="#0B1220" stroke-width="1.3"/></svg>',
+  amarilla: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#F5C400"/></svg>',
+  roja: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#FF3B3B"/></svg>',
+  doble: '<svg viewBox="0 0 24 24"><rect x="4.5" y="3" width="9" height="15" rx="2" fill="#F5C400"/><rect x="10.5" y="6" width="9" height="15" rx="2" fill="#FF3B3B"/></svg>',
+  cambio: '<svg viewBox="0 0 24 24"><path d="M8 20V6m0 0l-3.5 3.5M8 6l3.5 3.5" stroke="#3DD68C" stroke-width="2.4" fill="none" stroke-linecap="round"/><path d="M16 4v14m0 0l-3.5-3.5M16 18l3.5-3.5" stroke="#FF6B6B" stroke-width="2.4" fill="none" stroke-linecap="round"/></svg>',
+  lesion: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fff"/><path d="M10 6h4v4h4v4h-4v4h-4v-4H6v-4h4z" fill="#FF3B3B"/></svg>',
+  palo: '<svg viewBox="0 0 24 24"><path d="M3 21V5h12v16" fill="none" stroke="#EEF2F7" stroke-width="2.2"/><circle cx="17" cy="7" r="4" fill="#fff" stroke="#0B1220" stroke-width="1.2"/><path d="M19.5 3.5l2-1.5M21 7h2" stroke="#F5C400" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  errado: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#fff"/><path d="M7.5 7.5l9 9M16.5 7.5l-9 9" stroke="#FF3B3B" stroke-width="2.6" stroke-linecap="round"/></svg>',
+  var: '<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="3" fill="#EEF2F7"/><text x="12" y="15.5" text-anchor="middle" font-family="Inter,sans-serif" font-size="8" font-weight="900" fill="#0B1220">VAR</text></svg>',
+  otro: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4" fill="#8E9AAE"/></svg>'
+};
+function describirEvento(e) {
   const t = e.tipo || '';
-  let ic, tit, det = '';
-  if (/own goal/i.test(t)) { ic = '⚽'; tit = 'Gol en contra'; det = e.jugador; }
-  else if (/missed penalty/i.test(t)) { ic = '❌'; tit = 'Penal errado'; det = e.jugador; }
-  else if (/var/i.test(t)) { ic = '<span class="var">VAR</span>'; tit = /cancel/i.test(t) ? (/penalty/i.test(t) ? 'Penal anulado' : 'Gol anulado') : (/penalty/i.test(t) ? 'Penal por VAR' : 'Gol confirmado'); det = e.jugador; }
-  else if (esGol(t)) { ic = '⚽'; tit = /penalty/i.test(t) ? 'Gol de penal' : 'Gol'; det = `<b>${esc(e.jugador)}</b>${e.asistencia ? `<br><small>Asistencia: ${esc(e.asistencia)}</small>` : ''}`; return [ic, tit, det, true]; }
-  else if (esRoja(t)) { ic = tarjeta(true); tit = /second|yellow/i.test(t) ? 'Doble amarilla' : 'Tarjeta roja'; det = e.jugador; }
-  else if (esAmarilla(t)) { ic = tarjeta(false); tit = 'Amarilla'; det = e.jugador; }
-  else if (esCambio(t)) { ic = '⇄'; tit = 'Cambio'; return [ic, tit, `<span class="entra">▲ ${esc(e.jugador)}</span>${e.sale ? `<br><span class="sale">▼ ${esc(e.sale)}</span>` : ''}`, true]; }
-  else if (esLesion(t)) { ic = '🩹'; tit = 'Lesión'; det = e.jugador; }
-  else if (esPalo(t)) { ic = PALO_SVG; tit = 'Pelota en el palo'; det = e.jugador; }
-  else { ic = '•'; tit = t; det = e.jugador; }
-  return [ic, tit, `<b>${esc(det || '')}</b>`, true];
+  if (/own goal/i.test(t)) return { ic: ICO.gol, tit: 'Gol en contra', nom: e.jugador, gol: true };
+  if (/missed penalty/i.test(t)) return { ic: ICO.errado, tit: 'Penal errado', nom: e.jugador };
+  if (/var/i.test(t)) return { ic: ICO.var, tit: /cancel/i.test(t) ? (/penalty/i.test(t) ? 'Penal anulado por VAR' : 'Gol anulado por VAR') : (/penalty/i.test(t) ? 'Penal cobrado por VAR' : 'Gol confirmado por VAR'), nom: e.jugador };
+  if (esGol(t)) return { ic: ICO.gol, tit: /penalty/i.test(t) ? 'Gol de penal' : 'Gol', nom: e.jugador, extra: e.asistencia ? 'Asistencia: ' + e.asistencia : '', gol: true };
+  if (esRoja(t)) return /second|yellow/i.test(t) ? { ic: ICO.doble, tit: 'Doble amarilla', nom: e.jugador } : { ic: ICO.roja, tit: 'Tarjeta roja', nom: e.jugador };
+  if (esAmarilla(t)) return { ic: ICO.amarilla, tit: 'Tarjeta amarilla', nom: e.jugador };
+  if (esCambio(t)) return { ic: ICO.cambio, tit: 'Cambio', entra: e.jugador, sale: e.sale };
+  if (esLesion(t)) return { ic: ICO.lesion, tit: 'Lesión', nom: e.jugador };
+  if (esPalo(t)) return { ic: ICO.palo, tit: 'Pelota en el palo', nom: e.jugador };
+  return { ic: ICO.otro, tit: t, nom: e.jugador };
 }
 function panelMinuto(p) {
   const lista = (p.eventos || []).slice().sort((a, b) => minNum(a.minuto) - minNum(b.minuto));
-  let medio = false;
+  const cL = p.colores.local.c1, cV = p.colores.visitante.c1;
+  let gl = 0, gv = 0, segundo = false;
   const filas = lista.map(e => {
-    const [ic, tit, det] = eventoHTML(e), loc = String(e.equipo) === String(p.local.id);
-    const celda = `<div class="mm-ev ${loc ? 'izq' : 'der'}"><span class="mm-ic">${ic}</span><span><small>${esc(tit)}</small><span class="mm-det">${det}</span></span></div>`;
+    const d = describirEvento(e), loc = String(e.equipo) === String(p.local.id);
+    let marcador = '';
+    if (d.gol) { const aFavorLocal = /own goal/i.test(e.tipo) ? !loc : loc; aFavorLocal ? gl++ : gv++; marcador = `<span class="mm2-res">${gl}-${gv}</span>`; }
+    const cuerpo = d.entra !== undefined
+      ? `<b class="mm2-nom"><span class="mm2-in">▲</span> ${esc(d.entra)}</b>${d.sale ? `<span class="mm2-extra"><span class="mm2-out">▼</span> ${esc(d.sale)}</span>` : ''}`
+      : `<b class="mm2-nom">${esc(d.nom || '')}</b>${d.extra ? `<span class="mm2-extra">${esc(d.extra)}</span>` : ''}`;
+    const tarjeta = `<div class="mm2-card ${loc ? 'izq' : 'der'} ${d.gol ? 'gol' : ''}" style="--ce:${loc ? cL : cV}"><span class="mm2-ic">${d.ic}</span>
+      <span class="mm2-txt"><small>${esc(d.tit)}${marcador}</small>${cuerpo}</span></div>`;
     let sep = '';
-    if (!medio && minNum(e.minuto) > 45.99 && !/^45/.test(String(e.minuto))) { medio = true; sep = '<div class="mm-sep">Entretiempo</div>'; }
-    return sep + `<div class="mm-fila">${loc ? celda : '<div></div>'}<span class="mm-min">${esc(e.minuto)}'</span>${loc ? '<div></div>' : celda}</div>`;
+    if (!segundo && minNum(e.minuto) > 45.99 && !/^45/.test(String(e.minuto))) { segundo = true; sep = '<div class="mm2-sep"><span>Segundo tiempo</span></div>'; }
+    return sep + `<div class="mm2-fila">${loc ? tarjeta : '<span></span>'}<span class="mm2-min">${esc(e.minuto)}'</span>${loc ? '<span></span>' : tarjeta}</div>`;
   }).join('');
-  return `<section class="tarjeta mm"><div class="mm-cab"><span class="mini-eq">${escImg(p.local)}<b>${esc(p.local.nombre)}</b></span><span class="mini-eq der"><b>${esc(p.visitante.nombre)}</b>${escImg(p.visitante)}</span></div>
-    <div class="mm-sep">Comienza el partido</div>${filas}${p.terminado ? '<div class="mm-sep">Final del partido</div>' : ''}</section>`;
+  return `<section class="tarjeta mm2">
+    <div class="mm2-cab"><span class="mm2-eq" style="--ce:${cL}">${escImg(p.local)}<b>${esc(p.local.nombre)}</b></span><span class="mm2-eq der" style="--ce:${cV}"><b>${esc(p.visitante.nombre)}</b>${escImg(p.visitante)}</span></div>
+    <div class="mm2-cuerpo"><div class="mm2-sep"><span>Primer tiempo</span></div>${filas}
+      ${p.terminado ? `<div class="mm2-sep fin"><span>Final · ${p.gl ?? gl} - ${p.gv ?? gv}</span></div>` : p.vivo ? '<div class="mm2-sep vivo"><span>En juego</span></div>' : ''}</div></section>`;
 }
 
 /* ---------- Fechas de un torneo: en orden de calendario y arrancando en la que se juega ahora ---------- */
@@ -4754,6 +4898,8 @@ class Manejador(BaseHTTPRequestHandler):
             self.json(lambda: datos_proximos(q["equipo"]))
         elif url.path == "/api/escudos" and 0 < len(q.get("nombres", "")) <= 1200:
             self.json(lambda: datos_escudos(q["nombres"].split("|")))
+        elif url.path == "/api/resumen_goles" and re.fullmatch(r"(h?\d{1,12},?){1,30}", q.get("ids", "")):
+            self.json(lambda: datos_resumen_goles([x for x in q["ids"].split(",") if x]))
         elif url.path == "/api/hl_muestra" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
             self.json(lambda: hl_muestra(q["id"][1:]))
         elif url.path == "/api/jugadores_partido" and re.fullmatch(r"h\d{1,12}", q.get("id", "")):
