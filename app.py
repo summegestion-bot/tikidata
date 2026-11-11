@@ -402,6 +402,119 @@ def _datos_partido(id_partido):
 
 
 def datos_tabla(liga):
+    res = _datos_tabla(liga)
+    try:
+        completar_tabla(res, liga)
+    except Exception:
+        pass
+    return res
+
+
+# Zonas de cada tabla: (desde, hasta, tipo, texto). N = cantidad de equipos del grupo.
+# Tipos: cl/lib (copa principal), uel/sud (segunda copa), uecl (tercera), asc (ascenso), playoff, reducido, promo, desc (descenso), elim
+def _zonas_europa(cl, uel=1, uecl=1, promo=0, desc=3):
+    def z(N):
+        r = [(1, cl, "cl", "Champions League")]
+        if uel:
+            r.append((cl + 1, cl + uel, "uel", "Europa League"))
+        if uecl:
+            r.append((cl + uel + 1, cl + uel + uecl, "uecl", "Conference League"))
+        if promo:
+            r.append((N - desc - promo + 1, N - desc, "promo", "Promoción"))
+        r.append((N - desc + 1, N, "desc", "Descenso"))
+        return r
+    return z
+
+
+ZONAS = {
+    "PL": _zonas_europa(4, 1, 0), "PD": _zonas_europa(4), "SA": _zonas_europa(4), "BL1": _zonas_europa(4, promo=1, desc=2),
+    "FL1": _zonas_europa(4, promo=1, desc=2), "PPL": _zonas_europa(2, 1, 1, promo=1, desc=2), "DED": _zonas_europa(2, 1, 1, promo=2, desc=1),
+    "ELC": lambda N: [(1, 2, "asc", "Ascenso a la Premier"), (3, 6, "reducido", "Reducido por el ascenso"), (N - 2, N, "desc", "Descenso")],
+    "BSA": lambda N: [(1, 6, "lib", "Copa Libertadores"), (7, 12, "sud", "Copa Sudamericana"), (N - 3, N, "desc", "Descenso")],
+    "SAU": lambda N: [(N - 2, N, "desc", "Descenso")],
+    "COL": lambda N: [(1, 8, "playoff", "Cuadrangulares")],
+    "LMX": lambda N: [(1, 6, "playoff", "Liguilla"), (7, 10, "reducido", "Play-in")],
+    "MLS": lambda N: [(1, 7, "playoff", "Playoffs"), (8, 9, "reducido", "Wild card")],
+    "CL": lambda N: [(1, 8, "asc", "Octavos de final"), (9, 24, "playoff", "Playoff de ida y vuelta"), (25, N, "elim", "Eliminado")],
+    "UEL": lambda N: [(1, 8, "asc", "Octavos de final"), (9, 24, "playoff", "Playoff de ida y vuelta"), (25, N, "elim", "Eliminado")],
+    "UECL": lambda N: [(1, 8, "asc", "Octavos de final"), (9, 24, "playoff", "Playoff de ida y vuelta"), (25, N, "elim", "Eliminado")],
+    "LIB": lambda N: [(1, 2, "asc", "Octavos de final"), (3, 3, "sud", "Pasa a la Sudamericana")],
+    "SUD": lambda N: [(1, 1, "asc", "Octavos de final"), (2, 2, "playoff", "Playoff")],
+    "PNA": lambda N: [(1, 1, "asc", "Final por el ascenso"), (2, 8, "reducido", "Reducido")],
+}
+
+
+def zonas_de(liga, nombre_grupo, N):
+    n = normalizar(nombre_grupo)
+    if liga == "LPF":
+        if any(x in n for x in (" anual ", " annual ", " overall ", " general ", " acumulada ")):
+            return [(1, 1, "lib", "Copa Libertadores"), (N, N, "desc", "Descenso por tabla anual")]
+        if " promedio" in n:
+            return [(N, N, "desc", "Descenso por promedios")]
+        return [(1, 8, "playoff", "Playoffs")]
+    f = ZONAS.get(liga)
+    if not f or N < 4:
+        return []
+    return [z for z in f(N) if 1 <= z[0] <= z[1] <= N]
+
+
+ELIMINATORIA = re.compile(r"octavos|cuartos|semi|final|round of|1/8|1/4|1/2|quarter|play-?off|knockout|repechaje", re.I)
+
+
+def tabla_anual(partidos):
+    """Tabla anual de la Liga Profesional: suma Apertura y Clausura (sin los playoffs)."""
+    t = {}
+    for p in partidos:
+        if not p.get("terminado") or p.get("gl") is None or ELIMINATORIA.search(p.get("fase") or ""):
+            continue
+        for yo, gf, gc in ((p["local"], p["gl"], p["gv"]), (p["visitante"], p["gv"], p["gl"])):
+            if yo.get("id") is None:
+                continue
+            f = t.setdefault(yo["id"], {"equipo": yo, "pj": 0, "g": 0, "e": 0, "p": 0, "gf": 0, "gc": 0})
+            f["pj"] += 1
+            f["gf"] += gf
+            f["gc"] += gc
+            f["g" if gf > gc else "e" if gf == gc else "p"] += 1
+    filas = []
+    for f in t.values():
+        filas.append({"equipo": f["equipo"], "pj": f["pj"], "g": f["g"], "e": f["e"], "p": f["p"], "dg": f["gf"] - f["gc"],
+                      "pts": f["g"] * 3 + f["e"], "forma": "", "_gf": f["gf"]})
+    filas.sort(key=lambda f: (-f["pts"], -f["dg"], -f["_gf"], f["equipo"]["nombre"]))
+    for i, f in enumerate(filas):
+        f["pos"] = i + 1
+        f.pop("_gf")
+    return filas
+
+
+def completar_tabla(res, liga):
+    """Agrega a cada equipo su zona (copas, playoffs, descenso) y su próximo partido."""
+    proximos = {}
+    try:
+        cal = calendario_rapido(liga)
+        if liga == "LPF" and not any(" anual " in normalizar(g.get("nombre")) for g in res.get("grupos", [])):
+            filas = tabla_anual(cal.get("partidos", []))
+            if len(filas) >= 20:
+                res["grupos"].insert(min(2, len(res["grupos"])), {"nombre": "Tabla anual", "filas": filas})
+        hoy = datetime.now(ARG).strftime("%Y-%m-%d")
+        for p in sorted(cal.get("partidos", []), key=lambda p: (p["fecha"], p.get("hora") or "")):
+            if p.get("terminado") or p.get("vivo") or p["fecha"] < hoy or p.get("estado") in ("POSTPONED", "CANCELLED", "SUSPENDED"):
+                continue
+            for yo, rival, local in ((p["local"], p["visitante"], True), (p["visitante"], p["local"], False)):
+                if yo.get("id") is not None and yo["id"] not in proximos:
+                    proximos[yo["id"]] = {"rival": rival, "local": local, "fecha": p["fecha"], "hora": p.get("hora") or "", "id": p["id"]}
+    except Exception:
+        pass
+    for g in res.get("grupos", []):
+        N = len(g["filas"])
+        zonas = zonas_de(liga, g.get("nombre") or "", N)
+        g["zonas"] = [{"desde": a, "hasta": b, "tipo": t, "texto": x} for a, b, t, x in zonas]
+        for f in g["filas"]:
+            pos = f.get("pos") or 0
+            f["zona"] = next((t for a, b, t, x in zonas if a <= pos <= b), "")
+            f["prox"] = proximos.get(f["equipo"].get("id"))
+
+
+def _datos_tabla(liga):
     if liga in HL_LIGAS:
         return hl_tabla(liga)
     datos = api(f"/competitions/{liga}/standings", ttl=600)
@@ -3253,6 +3366,30 @@ nav.abajo .on { color:var(--azul); }
 .pos { display:inline-flex; width:24px; height:24px; border-radius:6px; align-items:center; justify-content:center; background:#1B2E4F; font-weight:800; font-size:12px; }
 .pos.top { background:var(--azul); color:var(--fondo); }
 .pts { font-family:Montserrat, sans-serif; font-weight:900; font-size:16px; }
+.tabla td.zpos { box-shadow:inset 3px 0 0 var(--z); padding-left:6px; }
+.tabla tr.corte td { border-top:1px solid rgba(255,255,255,.22); }
+.tabla tr.corte-desc td { border-top:1.5px dashed #EF4444; }
+.tabla td.prox { padding:4px 6px 4px 2px; } .tabla td.prox a { display:inline-flex; flex-direction:column; align-items:center; gap:1px; }
+.tabla td.prox small { font-size:9px; font-weight:800; color:var(--suave); line-height:1; }
+.esc.mini, img.esc.mini { width:20px !important; height:20px !important; font-size:7px !important; }
+.zonas { display:flex; flex-wrap:wrap; gap:6px 14px; padding:10px 12px 12px; border-top:1px solid var(--linea); font-size:11.5px; color:#AEBBD0; }
+.zonas span { display:inline-flex; align-items:center; gap:6px; } .zonas i { width:10px; height:10px; border-radius:3px; display:block; }
+.po .cab small { color:var(--suave); font-size:11px; }
+.po-etis, .po-cuadro { display:grid; gap:4px; padding:0 8px; }
+.po-etis { padding-top:4px; } .po-etis span { font-size:9.5px; font-weight:800; color:var(--suave); text-align:center; text-transform:uppercase; letter-spacing:.2px; }
+.po-cuadro { padding-bottom:14px; min-height:220px; }
+.po-col { display:flex; flex-direction:column; justify-content:space-around; gap:8px; min-width:0; }
+.po-llave { position:relative; display:flex; flex-direction:column; background:var(--tarj2); border:1px solid var(--linea); border-radius:8px; padding:3px 4px; }
+.po-llave.izq::after, .po-llave.der::before { content:''; position:absolute; top:50%; width:4px; border-top:1px solid #3A4D6E; }
+.po-llave.izq::after { right:-5px; } .po-llave.der::before { left:-5px; }
+.po-eq { display:flex; align-items:center; justify-content:space-between; gap:2px; height:22px; }
+.po-eq b { font-size:12px; font-weight:800; min-width:9px; text-align:right; }
+.po-eq.gana b { color:#3DD68C; } .po-eq.pierde { opacity:.45; }
+.po-nd { width:20px; height:20px; border-radius:10px; background:#1B2E4F; color:#6F86A8; font-size:10px; font-weight:800; display:inline-flex; align-items:center; justify-content:center; }
+.po-centro { align-items:center; justify-content:center; gap:6px; }
+.po-centro .po-llave { border-color:#E8B33A; width:100%; }
+.po-copa { font-size:24px; line-height:1; }
+.po-camp { font-size:9.5px; color:var(--suave); text-align:center; line-height:1.25; } .po-camp b { color:#E8B33A; font-size:10.5px; }
 .jug { display:grid; grid-template-columns:24px 40px 1fr auto; align-items:center; gap:10px; padding:10px 12px; border-top:1px solid var(--linea); }
 .avatar.pos-av, .pos-av { font-size:12px; background:var(--c) !important; color:#0B1220 !important; align-items:center !important; font-weight:900 !important; letter-spacing:.3px; box-shadow:inset 0 -3px 0 rgba(0,0,0,.18); }
 .avatar.xl.pos-av { font-size:24px; }
@@ -4322,11 +4459,9 @@ async function vistaLiga(cod, pestana) {
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => { location.hash = `#/liga/${cod}/${b.dataset.t}`; });
   try {
     if (pestana === 'tabla') {
-      const d = await pedir('/api/tabla?liga=' + cod);
-      $('panel').innerHTML = d.grupos.length ? d.grupos.map(g => `<section class="tarjeta">${g.nombre ? `<div class="cab"><div class="t"><b>${esc(g.nombre)}</b></div></div>` : ''}
-        <table class="tabla"><thead><tr><th>#</th><th class="izq">Equipo</th><th>PJ</th><th>G</th><th>E</th><th>P</th><th>DG</th><th>PTS</th></tr></thead><tbody>
-        ${g.filas.map(f => `<tr><td><span class="pos ${f.pos <= 4 ? 'top' : ''}">${f.pos}</span></td><td class="izq"><span class="eqt">${escudo(f.equipo)}<span class="nom">${esc(f.equipo.nombre)}</span></span></td><td>${f.pj}</td><td>${f.g}</td><td>${f.e}</td><td>${f.p}</td><td>${f.dg > 0 ? '+' : ''}${f.dg}</td><td class="pts">${f.pts}</td></tr>`).join('')}
-        </tbody></table></section>`).join('') : '<div class="tarjeta aviso">No hay tabla para este torneo.</div>';
+      const [d, cal] = await Promise.all([pedir('/api/tabla?liga=' + cod), pedir('/api/calendario?liga=' + cod).catch(() => null)]);
+      const llaves = cal ? cuadroPlayoffs(cal.partidos, cod) : '';
+      $('panel').innerHTML = llaves + (d.grupos.length ? d.grupos.map(tablaGrupo).join('') : (llaves ? '' : '<div class="tarjeta aviso">No hay tabla para este torneo.</div>'));
     } else if (pestana === 'goleadores') {
       const d = await pedir('/api/goleadores?liga=' + cod);
       $('panel').innerHTML = listaGoleadores(d, cod);
@@ -4352,6 +4487,95 @@ async function vistaLiga(cod, pestana) {
       dibujar();
     }
   } catch (e) { $('panel').innerHTML = error(e); }
+}
+
+/* ---------- Tablas: zonas (copas, playoffs, descenso) y próximo partido ---------- */
+const ZONA_COL = { cl: '#2F6BDB', lib: '#2F6BDB', uel: '#F28C28', sud: '#F28C28', uecl: '#22B07D', asc: '#22B07D', playoff: '#38BDF8', reducido: '#A3E635', promo: '#EAB308', desc: '#EF4444', elim: '#5B6578' };
+function tablaGrupo(g) {
+  const zonas = g.zonas || [];
+  const hayProx = g.filas.some(f => f.prox);
+  const prox = (f) => {
+    if (!f.prox) return '<td class="prox"></td>';
+    const d = new Date(f.prox.fecha + 'T12:00:00');
+    return `<td class="prox"><a href="#/partido/${f.prox.id}" title="${f.prox.local ? 'Local' : 'Visitante'} vs ${esc(f.prox.rival.nombre)} · ${d.getDate()}/${d.getMonth() + 1}">${escudo({ ...f.prox.rival, id: null }, 'esc mini')}<small>${f.prox.local ? 'L' : 'V'}</small></a></td>`;
+  };
+  return `<section class="tarjeta">${g.nombre ? `<div class="cab"><div class="t"><b>${esc(g.nombre)}</b></div></div>` : ''}
+    <table class="tabla"><thead><tr><th>#</th><th class="izq">Equipo</th><th>PJ</th><th>G</th><th>E</th><th>P</th><th>DG</th><th>PTS</th>${hayProx ? '<th>Próx.</th>' : ''}</tr></thead><tbody>
+    ${g.filas.map((f, i) => {
+      const z = f.zona || '', zAnt = (g.filas[i - 1] || {}).zona || '';
+      return `<tr class="${z && z !== zAnt && i ? 'corte' : ''} ${z === 'desc' && zAnt !== 'desc' ? 'corte-desc' : ''}"><td class="zpos" style="--z:${ZONA_COL[z] || 'transparent'}"><span class="pos ${z ? 'z' : ''}" style="${z ? `background:${ZONA_COL[z]};color:#0B1220` : ''}">${f.pos}</span></td><td class="izq"><span class="eqt">${escudo(f.equipo)}<span class="nom">${esc(f.equipo.nombre)}</span></span></td><td>${f.pj}</td><td>${f.g}</td><td>${f.e}</td><td>${f.p}</td><td>${f.dg > 0 ? '+' : ''}${f.dg}</td><td class="pts">${f.pts}</td>${hayProx ? prox(f) : ''}</tr>`;
+    }).join('')}
+    </tbody></table>
+    ${zonas.length ? `<div class="zonas">${zonas.map(z => `<span><i style="background:${ZONA_COL[z.tipo]}"></i>${esc(z.texto)}</span>`).join('')}</div>` : ''}</section>`;
+}
+
+/* ---------- Cuadro de playoffs: una mitad a la izquierda, la otra a la derecha y la final en el medio ---------- */
+const RONDAS_PO = ['Octavos de final', 'Cuartos de final', 'Semifinales', 'Final'];
+function cuadroPlayoffs(partidos, cod) {
+  const t = (p) => new Date(p.fecha + 'T' + (p.hora || '12:00') + ':00').getTime();
+  const ps = (partidos || []).filter(p => !p.jornada && RONDAS_PO.includes(nombreFase(p.fase)));
+  if (!ps.length) return '';
+  // solo los playoffs del torneo actual (o del que acaba de terminar)
+  const ultimo = Math.max(...ps.map(t));
+  if (ultimo < Date.now() - 25 * 86400000) return '';
+  const rec = ps.filter(p => ultimo - t(p) < 120 * 86400000).sort((a, b) => t(a) - t(b));
+  const k = (e) => e && (e.id != null ? String(e.id) : e.nombre);
+  let rondas = RONDAS_PO.map(r => {
+    const m = {};
+    rec.filter(p => nombreFase(p.fase) === r).forEach(p => {
+      const c = [k(p.local), k(p.visitante)].sort().join('|');
+      (m[c] ||= { eqs: [p.local, p.visitante], partidos: [] }).partidos.push(p);
+    });
+    return Object.values(m);
+  });
+  const ini = rondas.findIndex(r => r.length);
+  if (ini < 0) return '';
+  rondas = rondas.slice(ini);
+  const nombresR = RONDAS_PO.slice(ini);
+  if (rondas.length < 2) return '';
+  // completar con llaves "a definir" las rondas que todavía no se jugaron
+  rondas.forEach((r, i) => { const falta = Math.pow(2, rondas.length - 1 - i) - r.length; for (let j = 0; j < falta; j++) r.push({ eqs: [null, null], partidos: [] }); });
+  // goles (suma de ida y vuelta) y quién pasó
+  rondas.forEach((r, i) => r.forEach(ll => {
+    ll.goles = ll.eqs.map(e => e ? ll.partidos.reduce((s, p) => s + (p.gl == null ? 0 : k(p.local) === k(e) ? p.gl : p.gv), 0) : null);
+    ll.jugado = ll.partidos.some(p => p.terminado || p.vivo);
+    const sig = rondas[i + 1] || [];
+    const paso = ll.eqs.find(e => e && sig.some(x => x.eqs.some(y => y && k(y) === k(e))));
+    const fin = ll.partidos.length && ll.partidos.every(p => p.terminado);
+    ll.ganador = paso ? k(paso) : (fin && ll.goles[0] !== ll.goles[1] ? k(ll.eqs[ll.goles[0] > ll.goles[1] ? 0 : 1]) : null);
+  }));
+  // ordenar cada ronda según la siguiente, así las llaves quedan conectadas
+  for (let i = rondas.length - 2; i >= 0; i--) {
+    const libres = rondas[i].slice(), orden = [];
+    rondas[i + 1].forEach(sig => sig.eqs.forEach(e => {
+      const j = e ? libres.findIndex(ll => ll.eqs.some(x => x && k(x) === k(e))) : -1;
+      orden.push(j >= 0 ? libres.splice(j, 1)[0] : null);
+    }));
+    rondas[i] = orden.map(x => x || libres.shift()).filter(Boolean).concat(libres);
+  }
+  const caja = (ll, lado) => {
+    const fila = (n) => {
+      const e = ll.eqs[n];
+      const gano = ll.ganador && e && k(e) === ll.ganador, perdio = ll.ganador && e && k(e) !== ll.ganador;
+      return `<span class="po-eq ${gano ? 'gana' : ''} ${perdio ? 'pierde' : ''}">${e ? escudo({ ...e, id: null }, 'esc mini') : '<span class="po-nd">?</span>'}<b>${ll.jugado && e ? ll.goles[n] : ''}</b></span>`;
+    };
+    const p0 = ll.partidos[ll.partidos.length - 1];
+    const tag = p0 ? `a href="#/partido/${p0.id}"` : 'div';
+    return `<${tag} class="po-llave ${lado}">${fila(0)}${fila(1)}</${p0 ? 'a' : 'div'}>`;
+  };
+  const n = rondas.length;
+  const col = (r, lado, i) => `<div class="po-col" title="${esc(nombresR[i])}">${r.map(ll => caja(ll, lado)).join('')}</div>`;
+  const izq = rondas.slice(0, n - 1).map((r, i) => col(r.slice(0, r.length / 2), 'izq', i)).join('');
+  const der = rondas.slice(0, n - 1).map((r, i) => col(r.slice(r.length / 2), 'der', i)).reverse().join('');
+  const final = rondas[n - 1][0];
+  const campeon = final && final.ganador ? final.eqs.find(e => e && k(e) === final.ganador) : null;
+  const centro = `<div class="po-col po-centro"><span class="po-copa">🏆</span>${caja(final, 'fin')}${campeon ? `<small class="po-camp">Campeón<br><b>${esc(campeon.nombre)}</b></small>` : '<small class="po-camp">Final</small>'}</div>`;
+  const CORTO = { 'Octavos de final': '8vos', 'Cuartos de final': '4tos', 'Semifinales': 'Semis' };
+  const etis = nombresR.slice(0, n - 1).map(x => `<span>${esc(CORTO[x] || x)}</span>`).join('');
+  const m = MITADES[cod], d0 = new Date(ultimo);
+  return `<section class="tarjeta po"><div class="cab"><div class="t"><b>Playoffs${m ? ' · ' + m[d0.getMonth() < 6 ? 0 : 1] : ''}</b><small>Tocá una llave para ver el partido</small></div></div>
+    <div class="po-etis" style="grid-template-columns:repeat(${2 * n - 1},1fr)">${etis}<span>Final</span>${etis.split('</span>').filter(Boolean).reverse().map(x => x + '</span>').join('')}</div>
+    <div class="po-cuadro" style="grid-template-columns:repeat(${2 * n - 1},1fr)">${izq}${centro}${der}</div></section>`;
 }
 
 /* ---------- Calendario de todo el año ---------- */
