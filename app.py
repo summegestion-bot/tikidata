@@ -608,7 +608,8 @@ def calcular_goleadores_hl(cod):
     def top(campo, desempate):
         return [f for f in sorted(todos, key=lambda f: (-f[campo], -f[desempate], f["nombre"])) if f[campo] > 0][:30]
     return {"lista": top("goles", "asistencias"), "asistidores": top("asistencias", "goles"),
-            "amarillas": top("amarillas", "rojas"), "rojas": top("rojas", "amarillas"), "titulo": titulo, "hora": time.time()}
+            "amarillas": top("amarillas", "rojas"), "rojas": top("rojas", "amarillas"), "titulo": titulo, "hora": time.time(),
+            "faltan": sum(1 for p, d in detalles if d is None)}
 
 
 def _actualizar_goleadores(cod):
@@ -627,17 +628,20 @@ def goleadores_al_arrancar():
             hl_liga(c)
         except Exception:
             pass
+    # Al arrancar NO se cuentan los goles de todos los torneos (eso gastaba cientos de pedidos en cada reinicio):
+    # se cuentan recién cuando alguien abre la tabla de goleadores, y después se actualizan cada 2 horas.
     while True:
-        for c in GOLEADORES_HL:
+        time.sleep(2 * 3600)
+        for c in [x for x in GOLEADORES_HL if x in _goleadores]:
             _actualizar_goleadores(c)
             time.sleep(60)
-        time.sleep(2 * 3600)  # cada 2 horas: suma los partidos nuevos (y los que faltaron, de a poco)
 
 
 def datos_goleadores(liga):
     if liga in GOLEADORES_HL and HL_KEY:
         g = _goleadores.get(liga)
-        if not g and not _goleadores_candado.locked():
+        # si alguien la mira y todavía faltan partidos por contar, se suma otra tanda (cada 10 minutos como mucho)
+        if (not g or (g.get("faltan") and time.time() - g.get("hora", 0) > 600)) and not _goleadores_candado.locked():
             threading.Thread(target=_actualizar_goleadores, args=(liga,), daemon=True).start()
         if not g:
             return {"liga": liga, "nombre": HL_LIGAS[liga][0], "goleadores": [], "calculando": True}
@@ -1783,6 +1787,8 @@ def _estado_liga(c):
 # ---------------------------------------------------------------------------
 YOUTUBE_KEY = os.environ.get("YOUTUBE_API_KEY", "").strip()
 # Contador de visitas (GoatCounter, gratis). Variable GOATCOUNTER = el nombre elegido al registrarse (ej: tikidata)
+# Umami (estadísticas de visitas). El número del sitio es público, no es una clave.
+UMAMI_ID = re.sub(r"[^a-f0-9-]", "", os.environ.get("UMAMI_ID", "5873f4e9-b106-43e4-b0d4-3c4c967b5d9d").strip().lower())
 GOATCOUNTER = re.sub(r"[^a-z0-9-]", "", os.environ.get("GOATCOUNTER", "").strip().lower())
 # Solo canales OFICIALES (nombre exacto del canal en YouTube). Si el video no es de uno de estos,
 # no se muestra: aparece el botón para buscarlo en YouTube.
@@ -5060,11 +5066,21 @@ activarInstalar();
 revisarGoles();
 window.addEventListener('hashchange', ruta);
 // Contador de visitas: cuenta cada pantalla que se mira (inicio, partido, club, etc.)
+function pantallaActual() { const h = (location.hash || '#/').replace(/^#/, ''); return '/' + (h.split('/')[1] || 'inicio'); }
 function contarVisita(intento = 0) {
-  if (!window.goatcounter || !window.goatcounter.count) { if (intento < 20) setTimeout(() => contarVisita(intento + 1), 500); return; }
-  const h = (location.hash || '#/').replace(/^#/, '');
-  const pantalla = '/' + (h.split('/')[1] || 'inicio');
-  window.goatcounter.count({ path: pantalla, title: document.title, event: false });
+  const pantalla = pantallaActual();
+  if (window.goatcounter && window.goatcounter.count) window.goatcounter.count({ path: pantalla, title: document.title, event: false });
+  else if (intento < 20) setTimeout(() => contarVisitaGC(intento + 1, pantalla), 500);
+  contarUmami(0, pantalla);
+}
+function contarVisitaGC(intento, pantalla) {
+  if (window.goatcounter && window.goatcounter.count) window.goatcounter.count({ path: pantalla, title: document.title, event: false });
+  else if (intento < 20) setTimeout(() => contarVisitaGC(intento + 1, pantalla), 500);
+}
+// Umami: cada pantalla de la app se cuenta como una página (inicio, partido, liga, calendario…)
+function contarUmami(intento, pantalla) {
+  if (window.umami && window.umami.track) { try { window.umami.track(props => ({ ...props, url: pantalla, title: 'Tiki Data ' + pantalla })); } catch (e) {} }
+  else if (intento < 20) setTimeout(() => contarUmami(intento + 1, pantalla), 500);
 }
 window.addEventListener('hashchange', () => contarVisita());
 window.addEventListener('load', () => contarVisita());
@@ -5178,7 +5194,9 @@ class Manejador(BaseHTTPRequestHandler):
             base = ("http://" if host.startswith(("localhost", "127.")) else "https://") + host
             pagina = PAGINA.replace("__BASE__", base).replace("__LIGAS__", json.dumps(visibles, ensure_ascii=False)).replace("__HL__", json.dumps(hl_vis)).replace("__CONTADOR__", (
                 f'<script data-goatcounter="https://{GOATCOUNTER}.goatcounter.com/count" data-goatcounter-settings=\'{{"no_onload": true}}\' async src="https://gc.zgo.at/count.js"></script>'
-                if GOATCOUNTER else ""))
+                if GOATCOUNTER else "") + (
+                f'<script defer src="https://cloud.umami.is/script.js" data-website-id="{UMAMI_ID}" data-auto-track="false"></script>'
+                if UMAMI_ID else ""))
             self.responder(200, "text/html; charset=utf-8", pagina)
         elif url.path in ("/instalar", "/descargar", "/app"):
             self.send_response(302)
