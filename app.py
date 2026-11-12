@@ -312,7 +312,7 @@ def datos_hoy(fecha):
 
 
 # Orden de importancia (igual que el menú): primero lo argentino y las copas, después Europa, las 5 grandes, el ascenso y el resto
-ORDEN_LIGAS = ["LPF", "LIB", "SUD", "CL", "PL", "PD", "UEL", "SA", "BL1", "FL1", "CAR", "UECL", "BSA", "PNA", "WC", "CAM", "EURO",
+ORDEN_LIGAS = ["LPF", "LIB", "SUD", "WC", "AMI", "CL", "PL", "PD", "UEL", "SA", "BL1", "FL1", "UNL", "CAR", "UECL", "BSA", "PNA", "CAM", "EURO",
                "PPL", "DED", "ELC", "MLS", "LMX", "URU", "CHI", "COL", "PAR", "PER", "ECU", "BOL", "VEN", "SAU",
                "FAC", "CDR", "CIT", "DFB", "CDF", "TDC", "SCA", "FEDA", "PRC", "PRD"]
 
@@ -759,6 +759,9 @@ NUEVAS_HL = {
     "DFB": ("Copa de Alemania", "Alemania", [{"leagueName": "DFB Pokal"}, {"leagueName": "DFB-Pokal"}], [" dfb pokal "]),
     "CDF": ("Copa de Francia", "Francia", [{"leagueName": "Coupe de France"}], [" coupe de france "]),
     "CAM": ("Copa América", "Selecciones", [{"leagueName": "Copa America"}, {"leagueName": "CONMEBOL Copa America"}], [" copa america "]),
+    "AMI": ("Amistosos internacionales", "Selecciones", [{"leagueName": "Friendlies"}, {"leagueName": "International Friendlies"}, {"countryName": "World"}],
+            [" friendlies ", " friendly ", " international friendlies ", " amistosos "]),
+    "UNL": ("Liga de las Naciones", "Europa", [{"leagueName": "UEFA Nations League"}, {"leagueName": "Nations League"}], [" uefa nations league ", " nations league "]),
     "EURO": ("Eurocopa", "Selecciones", [{"leagueName": "UEFA Euro"}, {"leagueName": "Euro Championship"}, {"leagueName": "European Championship"}], [" euro championship ", " uefa euro ", " european championship ", " euro 20"]),
 }
 for _c, (_n, _r, _b, _p) in NUEVAS_HL.items():
@@ -856,6 +859,10 @@ def _elige(cod, nombre_norm):
         return False
     if cod in NUEVAS_HL:
         if cod == "UEL" and " conference " in nombre_norm:
+            return False
+        if cod == "AMI" and any(x in nombre_norm for x in (" club ", " clubs ", " u2", " u1", " olympic ")):
+            return False  # solo selecciones mayores (no amistosos de clubes ni juveniles)
+        if cod == "UNL" and " concacaf " in nombre_norm:
             return False
         if cod in ("COL", "PER", "BOL", "PAR", "VEN", "CHI", "URU") and (" b " in nombre_norm or " ascenso " in nombre_norm):
             return False
@@ -3649,7 +3656,7 @@ select { width:100%; min-height:44px; border-radius:10px; border:1px solid var(-
 const LIGAS = __LIGAS__;
 const HL = __HL__;  // torneos que vienen de Highlightly
 const CON_GOL = ['LPF', 'LIB', 'SUD', 'CAR', 'PNA'];  // torneos de Highlightly con tabla de goleadores
-const COLOR = { CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', FEDA:'#A5B4FC', PRC:'#94A3B8', PRD:'#64748B', TDC:'#F5C400', SCA:'#E879F9', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
+const COLOR = { AMI:'#38BDF8', UNL:'#818CF8', CL:'#8DB8FF', PL:'#C084FC', PD:'#FB923C', SA:'#2DD4BF', BL1:'#F87171', FL1:'#FACC15', PPL:'#22C55E', DED:'#F97316', ELC:'#A3A3A3', BSA:'#4ADE80', WC:'#E879F9', LPF:'#60A5FA', FEDA:'#A5B4FC', PRC:'#94A3B8', PRD:'#64748B', TDC:'#F5C400', SCA:'#E879F9', CAR:'#F472B6', LIB:'#FBBF24', SUD:'#34D399', PNA:'#93C5FD', URU:'#7DD3FC', CHI:'#EF4444', COL:'#FDE047', PAR:'#F87171', PER:'#FB7185', ECU:'#FACC15', BOL:'#4ADE80', VEN:'#B45309', MLS:'#60A5FA', LMX:'#22C55E', SAU:'#10B981', UEL:'#F59E0B', UECL:'#34D399', FAC:'#E5E7EB', CDR:'#F87171', CIT:'#38BDF8', DFB:'#FCA5A5', CDF:'#93C5FD', CAM:'#FBBF24', EURO:'#818CF8' };
 const DIAS = ['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
 const DIAS_L = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
 const MESES = ['Ene','Feb','Mar','Abr','May','Jun','Jul','Ago','Sep','Oct','Nov','Dic'];
@@ -3836,7 +3843,7 @@ function armarMenu() {
   const grupos = [['FÚTBOL ARGENTINO', ['LPF','CAR','TDC','SCA','PNA','BMETRO','FEDA','PRC','PRD']], ['COPAS SUDAMERICANAS', ['LIB','SUD']],
     ['TORNEOS DE EUROPA', ['CL','UEL','UECL']], ['LAS 5 GRANDES LIGAS', ['PL','PD','BL1','SA','FL1']],
     ['MÁS LIGAS', ['BSA','PPL','DED','ELC','MLS','LMX','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU']],
-    ['COPAS NACIONALES', ['FAC','CDR','CIT','DFB','CDF']], ['SELECCIONES', ['WC','CAM','EURO']]]
+    ['COPAS NACIONALES', ['FAC','CDR','CIT','DFB','CDF']], ['SELECCIONES', ['WC','AMI','UNL','CAM','EURO']]]
     .map(([n, cods]) => [n, cods.filter(c => LIGAS[c] || c === 'BMETRO')]).filter(g => g[1].some(c => LIGAS[c]));
   let h = `<div class="grupo">
     <a class="item" href="#/">${svg(ICON.inicio,20)}Inicio</a>
@@ -4740,7 +4747,7 @@ async function cargarMes(anio, mes, reintento = 0) {
     if (location.hash.startsWith('#/calendario') && cal.anio === anio && cal.mes === mes) { const y = window.scrollY; dibujarCalendario(); window.scrollTo(0, y); }
   }), 4000);
 }
-const ORDEN_LIGAS = ['LPF','LIB','SUD','CL','PL','PD','UEL','SA','BL1','FL1','CAR','UECL','BSA','PNA','WC','CAM','EURO',
+const ORDEN_LIGAS = ['LPF','LIB','SUD','WC','AMI','CL','PL','PD','UEL','SA','BL1','FL1','UNL','CAR','UECL','BSA','PNA','CAM','EURO',
   'PPL','DED','ELC','MLS','LMX','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU','FAC','CDR','CIT','DFB','CDF','TDC','SCA','FEDA','PRC','PRD'];
 function dibujarCalendario() {
   const km = cal.anio + '-' + cal.mes;
