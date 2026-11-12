@@ -312,9 +312,9 @@ def datos_hoy(fecha):
 
 
 # Orden de importancia (igual que el menú): primero lo argentino y las copas, después Europa, las 5 grandes, el ascenso y el resto
-ORDEN_LIGAS = ["LPF", "LIB", "SUD", "CAR", "CL", "UEL", "UECL", "PL", "PD", "BL1", "SA", "FL1", "PNA", "BSA", "PPL", "DED", "ELC", "MLS", "LMX",
-               "URU", "CHI", "COL", "PAR", "PER", "ECU", "BOL", "VEN", "SAU", "FAC", "CDR", "CIT", "DFB", "CDF", "TDC", "SCA", "FEDA", "PRC", "PRD",
-               "WC", "CAM", "EURO"]
+ORDEN_LIGAS = ["LPF", "LIB", "SUD", "CL", "PL", "PD", "UEL", "SA", "BL1", "FL1", "CAR", "UECL", "BSA", "PNA", "WC", "CAM", "EURO",
+               "PPL", "DED", "ELC", "MLS", "LMX", "URU", "CHI", "COL", "PAR", "PER", "ECU", "BOL", "VEN", "SAU",
+               "FAC", "CDR", "CIT", "DFB", "CDF", "TDC", "SCA", "FEDA", "PRC", "PRD"]
 
 
 def datos_hoy_fd(fecha):
@@ -1250,6 +1250,53 @@ def hl_tabla(cod):
             return 1
         grupos.sort(key=orden)
     return {"liga": cod, "nombre": HL_LIGAS[cod][0], "grupos": grupos}
+
+
+# Países y ciudades que las fuentes mandan en inglés
+PAISES_ES = {"Spain": "España", "England": "Inglaterra", "Germany": "Alemania", "France": "Francia", "Italy": "Italia", "Netherlands": "Países Bajos",
+             "Holland": "Países Bajos", "Belgium": "Bélgica", "Brazil": "Brasil", "Mexico": "México", "Peru": "Perú", "United States": "Estados Unidos",
+             "USA": "Estados Unidos", "Scotland": "Escocia", "Wales": "Gales", "Northern Ireland": "Irlanda del Norte", "Ireland": "Irlanda",
+             "Republic of Ireland": "Irlanda", "Switzerland": "Suiza", "Sweden": "Suecia", "Norway": "Noruega", "Denmark": "Dinamarca",
+             "Finland": "Finlandia", "Iceland": "Islandia", "Poland": "Polonia", "Czech Republic": "República Checa", "Czechia": "República Checa",
+             "Slovakia": "Eslovaquia", "Hungary": "Hungría", "Romania": "Rumania", "Bulgaria": "Bulgaria", "Greece": "Grecia", "Turkey": "Turquía",
+             "Türkiye": "Turquía", "Croatia": "Croacia", "Serbia": "Serbia", "Slovenia": "Eslovenia", "Bosnia and Herzegovina": "Bosnia y Herzegovina",
+             "Bosnia-Herzegovina": "Bosnia y Herzegovina", "Montenegro": "Montenegro", "North Macedonia": "Macedonia del Norte", "Albania": "Albania",
+             "Kosovo": "Kosovo", "Austria": "Austria", "Ukraine": "Ucrania", "Russia": "Rusia", "Georgia": "Georgia", "Armenia": "Armenia",
+             "Japan": "Japón", "South Korea": "Corea del Sur", "Korea Republic": "Corea del Sur", "China": "China", "Australia": "Australia",
+             "New Zealand": "Nueva Zelanda", "Saudi Arabia": "Arabia Saudita", "Qatar": "Catar", "Iran": "Irán", "Iraq": "Irak", "Israel": "Israel",
+             "Egypt": "Egipto", "Morocco": "Marruecos", "Algeria": "Argelia", "Tunisia": "Túnez", "Nigeria": "Nigeria", "Ghana": "Ghana",
+             "Senegal": "Senegal", "Ivory Coast": "Costa de Marfil", "Côte d'Ivoire": "Costa de Marfil", "Cote d'Ivoire": "Costa de Marfil",
+             "Cameroon": "Camerún", "Mali": "Malí", "Guinea": "Guinea", "South Africa": "Sudáfrica", "DR Congo": "RD del Congo",
+             "Congo DR": "RD del Congo", "Gabon": "Gabón", "Cape Verde": "Cabo Verde", "Canada": "Canadá", "Jamaica": "Jamaica",
+             "Haiti": "Haití", "Panama": "Panamá", "Costa Rica": "Costa Rica", "Honduras": "Honduras", "Dominican Republic": "República Dominicana",
+             "Cuba": "Cuba", "Uruguay": "Uruguay", "Paraguay": "Paraguay", "Chile": "Chile", "Colombia": "Colombia", "Ecuador": "Ecuador",
+             "Bolivia": "Bolivia", "Venezuela": "Venezuela", "Argentina": "Argentina", "Portugal": "Portugal", "Luxembourg": "Luxemburgo",
+             "Cyprus": "Chipre", "Lithuania": "Lituania", "Latvia": "Letonia", "Estonia": "Estonia", "Belarus": "Bielorrusia",
+             "Moldova": "Moldavia", "Azerbaijan": "Azerbaiyán", "Kazakhstan": "Kazajistán", "Uzbekistan": "Uzbekistán", "Syria": "Siria",
+             "Jordan": "Jordania", "Lebanon": "Líbano", "United Arab Emirates": "Emiratos Árabes Unidos", "Philippines": "Filipinas",
+             "Indonesia": "Indonesia", "Thailand": "Tailandia", "Curacao": "Curazao", "Curaçao": "Curazao", "Suriname": "Surinam",
+             "Trinidad and Tobago": "Trinidad y Tobago", "Guatemala": "Guatemala", "El Salvador": "El Salvador", "Nicaragua": "Nicaragua",
+             "Europe": "Europa", "South America": "Sudamérica", "World": "Mundo", "Africa": "África", "Asia": "Asia",
+             "London": "Londres", "Munich": "Múnich", "Turin": "Turín", "Milan": "Milán", "Rome": "Roma", "Lisbon": "Lisboa", "Seville": "Sevilla",
+             "Naples": "Nápoles", "Florence": "Florencia", "Genoa": "Génova", "Marseille": "Marsella", "Cologne": "Colonia", "Athens": "Atenas",
+             "Moscow": "Moscú", "Brussels": "Bruselas", "Geneva": "Ginebra", "Vienna": "Viena", "Prague": "Praga", "Warsaw": "Varsovia"}
+_PAISES_RE = re.compile(r"(?<![\w])(" + "|".join(sorted((re.escape(k) for k in PAISES_ES), key=len, reverse=True)) + r")(?![\w])")
+_CLAVES_PAIS = {"nacionalidad", "ubicacion", "pais", "region", "lugar", "ciudad"}
+
+
+def pais_es(texto):
+    return _PAISES_RE.sub(lambda m: PAISES_ES[m.group(1)], texto) if isinstance(texto, str) and texto else texto
+
+
+def en_castellano(obj, clave=None):
+    """Recorre los datos antes de mandarlos y pasa al castellano los países y ciudades que vienen en inglés."""
+    if isinstance(obj, dict):
+        return {k: en_castellano(v, k) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [en_castellano(v, clave) for v in obj]
+    if clave in _CLAVES_PAIS and isinstance(obj, str):
+        return pais_es(obj)
+    return obj
 
 
 def _cod_de_partido(id_txt, m=None):
@@ -2303,6 +2350,61 @@ def _temporada_actual(texto):
 BL, NE, RO, CE, AZ, VE, AM, GR, NA = "#FFFFFF", "#161616", "#D5121E", "#6CB4E8", "#1F3F99", "#13803B", "#F7D117", "#7A1F2B", "#14235A"
 ORO, AZB, MA, CR, CEL = "#F5C400", "#1D4AA0", "#6B3E1F", "#EFE3C2", "#8FC9F0"
 CAMISETAS = {
+    # --- México (Liga MX) ---
+    "club america": ("liso", AM, NA, {"sup": ("liso", NA, AM, {})}),
+    "america": ("liso", AM, NA, {"sup": ("liso", NA, AM, {})}),
+    "guadalajara": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "chivas": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "cruz azul": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "pumas": ("liso", BL, NA, {"sup": ("liso", NA, ORO, {})}),
+    "unam": ("liso", BL, NA, {"sup": ("liso", NA, ORO, {})}),
+    "tigres": ("liso", AM, AZ, {"sup": ("liso", AZ, AM, {})}),
+    "monterrey": ("rayas", NA, BL, {"m": NA, "sup": ("liso", BL, NA, {})}),
+    "toluca": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "santos laguna": ("rayas", VE, BL, {"m": VE, "sup": ("liso", BL, VE, {})}),
+    "leon": ("liso", VE, BL, {"sup": ("liso", BL, VE, {})}),
+    "pachuca": ("rayas", NA, BL, {"m": NA, "sup": ("liso", BL, NA, {})}),
+    "atlas": ("mitad", RO, NE, {"sup": ("liso", BL, RO, {})}),
+    "puebla": ("banda", BL, AZ, {"sup": ("liso", AZ, BL, {})}),
+    "queretaro": ("rayas", AZ, NE, {"m": AZ, "sup": ("liso", BL, AZ, {})}),
+    "necaxa": ("rayas", RO, BL, {"m": RO, "sup": ("liso", BL, RO, {})}),
+    "tijuana": ("rayas", RO, NE, {"m": NE, "sup": ("liso", BL, RO, {})}),
+    "mazatlan": ("liso", "#5B2C83", BL, {"sup": ("liso", BL, "#5B2C83", {})}),
+    "san luis": ("rayas", RO, BL, {"m": RO, "sup": ("liso", AZ, RO, {})}),
+    # --- Estados Unidos (MLS) ---
+    "inter miami": ("liso", "#F5A9C7", NE, {"sup": ("liso", NE, "#F5A9C7", {})}),
+    "la galaxy": ("liso", BL, NA, {"sup": ("liso", NA, ORO, {})}),
+    "los angeles fc": ("liso", NE, ORO, {"sup": ("liso", BL, ORO, {})}),
+    "lafc": ("liso", NE, ORO, {"sup": ("liso", BL, ORO, {})}),
+    "seattle sounders": ("liso", VE, AZ, {"sup": ("liso", AZ, VE, {})}),
+    "atlanta united": ("rayas", RO, NE, {"m": NE, "sup": ("liso", BL, RO, {})}),
+    "new york city": ("liso", CEL, NA, {"sup": ("liso", NA, CEL, {})}),
+    "new york red bulls": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "red bull new york": ("liso", BL, RO, {"sup": ("liso", RO, BL, {})}),
+    "orlando city": ("liso", "#5B2C83", BL, {"sup": ("liso", BL, "#5B2C83", {})}),
+    "columbus crew": ("liso", AM, NE, {"sup": ("liso", NE, AM, {})}),
+    "portland timbers": ("liso", VE, AM, {"sup": ("liso", BL, VE, {})}),
+    "toronto": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "cincinnati": ("liso", NA, "#F27C21", {"sup": ("liso", BL, NA, {})}),
+    "nashville": ("liso", AM, NA, {"sup": ("liso", NA, AM, {})}),
+    "philadelphia union": ("liso", NA, AM, {"sup": ("liso", BL, NA, {})}),
+    "houston dynamo": ("liso", "#F27C21", NE, {"sup": ("liso", BL, "#F27C21", {})}),
+    "austin": ("liso", VE, NE, {"sup": ("liso", NE, VE, {})}),
+    "sporting kansas city": ("liso", CEL, NA, {"sup": ("liso", NA, CEL, {})}),
+    "colorado rapids": ("liso", GR, CEL, {"sup": ("liso", BL, GR, {})}),
+    "real salt lake": ("liso", GR, AZ, {"sup": ("liso", BL, GR, {})}),
+    "dc united": ("liso", NE, RO, {"sup": ("liso", BL, NE, {})}),
+    "d c united": ("liso", NE, RO, {"sup": ("liso", BL, NE, {})}),
+    "chicago fire": ("liso", RO, BL, {"sup": ("liso", BL, RO, {})}),
+    "vancouver whitecaps": ("liso", BL, AZ, {"sup": ("liso", AZ, BL, {})}),
+    "new england revolution": ("liso", NA, RO, {"sup": ("liso", BL, NA, {})}),
+    "charlotte": ("liso", CEL, NE, {"sup": ("liso", NE, CEL, {})}),
+    "st louis city": ("liso", RO, NA, {"sup": ("liso", BL, RO, {})}),
+    # --- Arabia Saudita ---
+    "al hilal": ("liso", AZ, BL, {"sup": ("liso", BL, AZ, {})}),
+    "al nassr": ("liso", AM, AZ, {"sup": ("liso", AZ, AM, {})}),
+    "al ittihad": ("rayas", AM, NE, {"m": NE, "sup": ("liso", BL, AM, {})}),
+    "al ahli": ("liso", VE, BL, {"sup": ("liso", BL, VE, {})}),
     # --- Argentina: Liga Profesional ---
     "boca juniors": ("franja", AZB, ORO, {"sup": ("liso", ORO, AZB, {})}),
     "river plate": ("banda", BL, RO, {"k": NE, "sup": ("banda", NE, RO, {})}),
@@ -3318,7 +3420,7 @@ nav.abajo .on { color:var(--azul); }
 .fjug-t small { font-size:11.5px; color:var(--suave); } .fjug-t b { font-size:14.5px; }
 .mks { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
 .mk { font-size:11.5px; font-weight:700; color:#C7D2E0; background:rgba(255,255,255,.05); padding:2px 7px; border-radius:6px; display:inline-flex; align-items:center; gap:4px; }
-.mk.sale { color:#FF7B7B; } .mk.entra { color:#3DD68C; } .mk.asis { color:#8FB8FA; }
+.mk.sale { color:#EF4444; } .mk.entra { color:#22C55E; } .mk.asis { color:#8FB8FA; }
 .fjug-d { text-align:right; } .fjug-d small { font-size:12px; color:var(--suave); font-weight:700; line-height:1.45; }
 .chip img { width:18px; height:18px; object-fit:contain; vertical-align:-4px; }
 .mini-eq { display:inline-flex; align-items:center; gap:6px; } .mini-eq img { width:20px; height:20px; object-fit:contain; }
@@ -3342,7 +3444,9 @@ nav.abajo .on { color:var(--azul); }
 .mm2-nom { font-size:13px; font-weight:600; color:#E6EBF2; line-height:1.3; overflow-wrap:anywhere; }
 .mm2-card.gol .mm2-nom { font-weight:800; color:#FFFFFF; }
 .mm2-extra { font-size:11.5px; color:#8E9AAE; margin-top:1px; }
-.mm2-in, .mm2-out { color:#8E9AAE; font-size:9px; }
+.mm2-in, .mm2-out { font-size:10px; font-weight:900; } .mm2-in { color:#22C55E; } .mm2-out { color:#EF4444; }
+.item.proximo { opacity:.6; cursor:default; }
+.tarjeta.proxima { opacity:.7; } .tarjeta.proxima .cab { gap:10px; } .tag-prox { margin-left:auto; font-style:normal; font-size:10px; font-weight:800; letter-spacing:.3px; color:#C9CFD8; background:#1B2E4F; border-radius:20px; padding:3px 8px; }
 .mm2-res { font-size:10.5px; font-weight:800; color:#C7D2E0; border:1px solid #3A4A66; border-radius:4px; padding:0 5px; letter-spacing:0; font-variant-numeric:tabular-nums; }
 .mm2-sep { position:relative; z-index:1; text-align:center; margin:6px 0; }
 .mm2-sep span { display:inline-block; font-size:10px; font-weight:700; letter-spacing:1.4px; text-transform:uppercase; color:#8E9AAE; background:var(--tarj); padding:4px 12px; }
@@ -3729,11 +3833,11 @@ new MutationObserver(() => document.querySelectorAll('.cargando:not([data-dato])
   setTimeout(() => { if (el.isConnected) ponerDato(el); }, 900);
 })).observe(document.body, { childList: true, subtree: true });
 function armarMenu() {
-  const grupos = [['ARGENTINA Y COPAS', ['LPF','LIB','SUD','CAR']], ['TORNEOS DE EUROPA', ['CL','UEL','UECL']],
-    ['LAS 5 GRANDES LIGAS', ['PL','PD','BL1','SA','FL1']], ['ASCENSO ARGENTINO', ['PNA']],
+  const grupos = [['FÚTBOL ARGENTINO', ['LPF','CAR','TDC','SCA','PNA','BMETRO','FEDA','PRC','PRD']], ['COPAS SUDAMERICANAS', ['LIB','SUD']],
+    ['TORNEOS DE EUROPA', ['CL','UEL','UECL']], ['LAS 5 GRANDES LIGAS', ['PL','PD','BL1','SA','FL1']],
     ['MÁS LIGAS', ['BSA','PPL','DED','ELC','MLS','LMX','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU']],
-    ['COPAS NACIONALES', ['FAC','CDR','CIT','DFB','CDF','TDC','SCA']], ['MÁS ASCENSO ARGENTINO', ['FEDA','PRC','PRD']], ['SELECCIONES', ['WC','CAM','EURO']]]
-    .map(([n, cods]) => [n, cods.filter(c => LIGAS[c])]).filter(g => g[1].length);
+    ['COPAS NACIONALES', ['FAC','CDR','CIT','DFB','CDF']], ['SELECCIONES', ['WC','CAM','EURO']]]
+    .map(([n, cods]) => [n, cods.filter(c => LIGAS[c] || c === 'BMETRO')]).filter(g => g[1].some(c => LIGAS[c]));
   let h = `<div class="grupo">
     <a class="item" href="#/">${svg(ICON.inicio,20)}Inicio</a>
     <a class="item" href="#/calendario">${svg(ICON.cal,20)}Calendario</a>
@@ -3743,7 +3847,9 @@ function armarMenu() {
     <a class="item" href="#/trivia"><span style="width:20px;text-align:center">🧠</span>Trivia de fútbol</a>
     <button class="item" id="btnInstalar" style="border:0;background:var(--azulreal);width:100%;margin-top:6px" ${puedeInstalar() ? '' : 'hidden'}>${svg('M12 3v12M7 10l5 5 5-5M5 21h14',20)}Instalar la app en el celular</button></div>`;
   grupos.forEach(([n, cods]) => {
-    h += `<div class="grupo"><small>${n}</small>` + cods.map(c => `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c] || '#60A5FA'}"></span>${esc(LIGAS[c][0])}</a>`).join('');
+    h += `<div class="grupo"><small>${n}</small>` + cods.map(c => c === 'BMETRO'
+      ? `<span class="item proximo"><span class="punto" style="background:#5B6578"></span>Primera B Metro<em class="tag-prox">Próximamente</em></span>`
+      : `<a class="item" href="#/liga/${c}"><span class="punto" style="background:${COLOR[c] || '#60A5FA'}"></span>${esc(LIGAS[c][0])}</a>`).join('');
     h += '</div>';
   });
   $('menuLigas').innerHTML = h;
@@ -3806,9 +3912,12 @@ async function pintarHoy(fecha, deNuevo) {
     }
     $('favs').innerHTML = favHTML;
     if (favs.length && !deFavs.length) cargarProximosFavs(favs);
-    $('ligasHoy').innerHTML = d.grupos.length ? d.grupos.map(g => `<section class="tarjeta">
+    // las ligas más importantes primero (el orden lo arma el servidor, y se repite acá por las dudas)
+    const grupos = d.grupos.slice().sort((x, y) => { const ix = ORDEN_LIGAS.indexOf(x.liga), iy = ORDEN_LIGAS.indexOf(y.liga); return (ix < 0 ? 99 : ix) - (iy < 0 ? 99 : iy); });
+    const tarjeta = (g) => `<section class="tarjeta">
         <a class="cab" href="#/liga/${g.liga}">${g.emblema ? `<img class="emb" src="${esc(g.emblema)}" alt="">` : ''}<div class="t"><b>${esc(g.nombre)}</b><small>${esc(g.region)}</small></div>${svg(ICON.sig,16)}</a>
-        ${g.partidos.map(p => filaPartido(p)).join('')}</section>`).join('')
+        ${g.partidos.map(p => filaPartido(p)).join('')}</section>`;
+    $('ligasHoy').innerHTML = grupos.length ? grupos.map(tarjeta).join('')
       : `<div class="tarjeta aviso">No hay partidos de las ligas disponibles este día.<br><a class="link" href="#/calendario">Ver el calendario</a></div>`;
   } catch (e) { if (!deNuevo && $('ligasHoy')) $('ligasHoy').innerHTML = error(e); else if (deNuevo) timerHoy = setTimeout(() => { if (location.hash === hashAntes) pintarHoy(fecha, true); }, 20000); }
 }
@@ -4167,6 +4276,13 @@ const POS_COL = { ARQ:'#A78BFA', DEF:'#FF5A5F', MED:'#FDBA74', DEL:'#3DD68C', SU
 const POS_ABR = { ARQ:'ARQ', DEF:'DFC', MED:'MC', DEL:'DC', SUP:'SUP' };
 const POS_NOM = { ARQ:'Arquero', DEF:'Defensor', MED:'Mediocampista', DEL:'Delantero', SUP:'Suplente' };
 function posDeTexto(t) { t = (t || '').toLowerCase(); if (t.includes('goal') || t === 'g') return 'ARQ'; if (t.includes('def') || t.includes('back') || t === 'd') return 'DEF'; if (t.includes('mid') || t === 'm') return 'MED'; if (t.includes('att') || t.includes('forw') || t.includes('off') || t.includes('strik') || t.includes('wing') || t === 'f') return 'DEL'; return ''; }
+const POS_ES = [[/goal ?keeper|^goalkeeper|^portero/i, 'Arquero'], [/left[- ]?back/i, 'Lateral izquierdo'], [/right[- ]?back/i, 'Lateral derecho'],
+  [/wing[- ]?back/i, 'Carrilero'], [/cent(re|er)[- ]?back/i, 'Defensor central'], [/defen[cs]e|defender/i, 'Defensor'],
+  [/defensive mid/i, 'Volante central'], [/attacking mid/i, 'Enganche'], [/left mid/i, 'Volante izquierdo'], [/right mid/i, 'Volante derecho'],
+  [/cent(re|er)(al)? mid/i, 'Mediocampista central'], [/midfield/i, 'Mediocampista'], [/left wing/i, 'Extremo izquierdo'], [/right wing/i, 'Extremo derecho'],
+  [/second striker/i, 'Segundo delantero'], [/cent(re|er)[- ]?forward/i, 'Centrodelantero'], [/forward|striker|attacker|offen[cs]e/i, 'Delantero'],
+  [/manager|coach/i, 'Director técnico']];
+function posES(t) { if (!t) return ''; const m = POS_ES.find(([re]) => re.test(t)); return m ? m[1] : t; }
 function posDeFila(i, n) { return i === 0 ? 'ARQ' : i === 1 ? 'DEF' : i === n - 1 ? 'DEL' : 'MED'; }
 // Banderas: código de país -> emoji
 function bandera(cod) {
@@ -4273,7 +4389,7 @@ async function vistaPartido(id, pestana, deNuevo) {
     document.querySelectorAll('.pestanas button').forEach(b => b.classList.toggle('on', +b.dataset.p === i));
     if (pest[i][0] === 'Resumen') cargarResumenYT(p.id);
     if (pest[i][0] === 'Estadísticas') cargarStats(p);
-    if (pest[i][0] === 'Formación') { activarFormacion(p, EV); cargarInfoJugadores(p, EV); }
+    if (pest[i][0] === 'Formación') activarFormacion(p, EV);
   };
   document.querySelectorAll('.pestanas button').forEach(b => b.onclick = () => mostrar(+b.dataset.p));
   const iniPest = pestana ? Math.max(0, pest.findIndex(([t]) => t === pestana)) : 0;
@@ -4322,12 +4438,11 @@ function listaJugadores(p, ev) {
       e.am && !e.roja ? `<span class="mk">${tarjeta(false)}${esc(e.am)}'</span>` : '', e.roja ? `<span class="mk">${tarjeta(true)}${esc(e.roja)}'</span>` : '',
       ...(e.goles || []).map(m => `<span class="mk">⚽ ${esc(m)}'</span>`), ...(e.gec || []).map(m => `<span class="mk">⚽ ${esc(m)}' (e.c.)</span>`),
       ...(e.asist || []).map(m => `<span class="mk asis">👟 Asist. ${esc(m)}'</span>`),
-      e.sale ? `<span class="mk sale">⇄ ${esc(e.sale)}'</span>` : '', e.entra ? `<span class="mk entra">⇄ ${esc(e.entra)}'</span>` : '',
+      e.sale ? `<span class="mk sale">▼ ${esc(e.sale)}'</span>` : '', e.entra ? `<span class="mk entra">▲ ${esc(e.entra)}'</span>` : '',
       e.lesion ? `<span class="mk">🩹 Lesión ${esc(e.lesion)}'</span>` : ''].join('');
-    const fis = [inf.altura, inf.edad ? inf.edad + ' años' : '', inf.peso].filter(Boolean);
-    return `<div class="fjug"><span class="num-c" style="background:${col.c1};color:${col.c2};border-color:${col.c2}">${j.numero ?? '–'}${inf.bandera ? `<em class="bandera">${bandera(inf.bandera)}</em>` : ''}</span>
+    return `<div class="fjug"><span class="num-c" style="background:${col.c1};color:${col.c2};border-color:${col.c2}">${j.numero ?? '–'}</span>
       <span class="fjug-t"><small>${POS_LARGA[pos] || ''}</small><b>${esc(j.nombre)}</b>${marcas ? `<span class="mks">${marcas}</span>` : ''}</span>
-      <span class="fjug-d">${puntajeDe(p, j)}${fis.length ? `<small>${fis.map(esc).join('<br>')}</small>` : ''}</span></div>`;
+      <span class="fjug-d">${puntajeDe(p, j)}</span></div>`;
   };
   return `<section class="tarjeta"><div class="cab"><div class="t"><b>Titulares</b><small>${esc(p[k].nombre)}${eq.formacion ? ' · ' + esc(eq.formacion) : ''}</small></div></div>
       ${eq.dt ? `<div class="fjug"><span class="num-c dt">DT</span><span class="fjug-t"><small>Dirección técnica</small><b>${esc(eq.dt)}</b></span><span></span></div>` : ''}
@@ -4351,7 +4466,29 @@ async function cargarInfoJugadores(p, ev) {
   } catch (e) {}
 }
 
-const STATS_ES = { 'Ball possession':'Posesión', 'Possession':'Posesión', 'Total shots':'Remates', 'Shots on target':'Remates al arco', 'Shots off target':'Remates afuera', 'Blocked shots':'Remates bloqueados', 'Corner kicks':'Córners', 'Corners':'Córners', 'Fouls':'Faltas', 'Offsides':'Offsides', 'Yellow cards':'Amarillas', 'Red cards':'Rojas', 'Goalkeeper saves':'Atajadas', 'Total passes':'Pases', 'Passes accurate':'Pases correctos', 'Expected goals':'Goles esperados (xG)' };
+// Estadísticas: si alguna no está en la lista, se traduce palabra por palabra
+const PALABRAS_ES = { shots:'remates', shot:'remate', on:'al', target:'arco', off:'afuera', blocked:'bloqueados', inside:'dentro del', outside:'fuera del', box:'área',
+  corner:'córners', corners:'córners', kicks:'', fouls:'faltas', offsides:'offsides', yellow:'amarillas', red:'rojas', cards:'', goalkeeper:'del arquero', saves:'atajadas',
+  passes:'pases', pass:'pases', accurate:'correctos', successful:'exitosos', total:'', possession:'posesión', ball:'', tackles:'quites', interceptions:'intercepciones',
+  clearances:'despejes', crosses:'centros', dribbles:'gambetas', duels:'duelos', won:'ganados', aerial:'aéreos', aerials:'aéreos', big:'claras', chances:'chances', missed:'erradas',
+  expected:'esperados', goals:'goles', hit:'', woodwork:'tiros al palo', free:'tiros libres', throw:'laterales', ins:'', attacks:'ataques', dangerous:'peligrosos',
+  long:'largos', balls:'pelotazos', key:'clave', touches:'toques', in:'en', the:'', of:'de', penalties:'penales', penalty:'penal', saved:'atajados', counter:'contra', assists:'asistencias' };
+function statES(n) {
+  if (!n) return '';
+  if (STATS_ES[n]) return STATS_ES[n];
+  const k = Object.keys(STATS_ES).find(x => x.toLowerCase() === n.toLowerCase().replace(/_/g, ' '));
+  if (k) return STATS_ES[k];
+  // adjetivo + sustantivo en inglés -> sustantivo + adjetivo en castellano
+  let ws = n.split(/[\s_]+/);
+  if (ws.length === 2 && /^(successful|accurate|blocked|dangerous|total|big|key|long|missed|won)$/i.test(ws[0])) ws = [ws[1], ws[0]];
+  const t = ws.map(w => PALABRAS_ES[w.toLowerCase()] ?? w).filter(Boolean).join(' ');
+  return t ? t[0].toUpperCase() + t.slice(1) : n;
+}
+const STATS_ES = { 'Shots inside box':'Remates dentro del área', 'Shots outside box':'Remates fuera del área', 'Hit woodwork':'Tiros al palo', 'Big chances':'Chances claras',
+  'Big chances missed':'Chances claras erradas', 'Free kicks':'Tiros libres', 'Throw ins':'Laterales', 'Throw-ins':'Laterales', 'Goal kicks':'Saques de arco', 'Tackles':'Quites',
+  'Interceptions':'Intercepciones', 'Clearances':'Despejes', 'Saves':'Atajadas', 'Accurate passes':'Pases correctos', 'Passes %':'Precisión de pases', 'Crosses':'Centros',
+  'Dribbles':'Gambetas', 'Successful dribbles':'Gambetas exitosas', 'Duels won':'Duelos ganados', 'Aerials won':'Duelos aéreos ganados', 'Attacks':'Ataques',
+  'Dangerous attacks':'Ataques peligrosos', 'Successful passes':'Pases correctos', 'Key passes':'Pases clave', 'Goalkeeper saves':'Atajadas', 'Shots':'Remates', 'Long balls':'Pelotazos', 'Assists':'Asistencias', 'Penalties':'Penales', 'Counter attacks':'Contraataques', 'Ball possession':'Posesión', 'Possession':'Posesión', 'Total shots':'Remates', 'Shots on target':'Remates al arco', 'Shots off target':'Remates afuera', 'Blocked shots':'Remates bloqueados', 'Corner kicks':'Córners', 'Corners':'Córners', 'Fouls':'Faltas', 'Offsides':'Offsides', 'Yellow cards':'Amarillas', 'Red cards':'Rojas', 'Goalkeeper saves':'Atajadas', 'Total passes':'Pases', 'Passes accurate':'Pases correctos', 'Expected goals':'Goles esperados (xG)' };
 async function cargarStats(p) {
   const el = $('stats'); if (!el) return;
   try {
@@ -4360,7 +4497,7 @@ async function cargarStats(p) {
     const num = (v) => parseFloat(String(v ?? '0').replace('%', '').replace(',', '.')) || 0;
     el.innerHTML = `<section class="tarjeta pad"><div style="display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:700;color:var(--suave);margin-bottom:6px"><span class="mini-eq">${escImg(p.local)}${esc(p.local.nombre)}</span><span class="mini-eq">${esc(p.visitante.nombre)}${escImg(p.visitante)}</span></div>
       ${d.estadisticas.map(s => { const a = num(s.local), b = num(s.visitante), t = (a + b) || 1; return `<div style="padding:10px 0;border-top:1px solid var(--linea)">
-        <div style="display:grid;grid-template-columns:60px 1fr 60px;font-size:14px"><b>${esc(s.local ?? '-')}</b><span style="text-align:center;font-size:12px;color:var(--suave)">${esc(STATS_ES[s.nombre] || s.nombre)}</span><b style="text-align:right">${esc(s.visitante ?? '-')}</b></div>
+        <div style="display:grid;grid-template-columns:60px 1fr 60px;font-size:14px"><b>${esc(s.local ?? '-')}</b><span style="text-align:center;font-size:12px;color:var(--suave)">${esc(statES(s.nombre))}</span><b style="text-align:right">${esc(s.visitante ?? '-')}</b></div>
         <div class="barra"><div><i style="width:${Math.round(a / t * 100)}%;background:${p.colores.local.c1}"></i></div><div><i style="width:${Math.round(b / t * 100)}%;background:${p.colores.visitante.c1}"></i></div></div></div>`; }).join('')}</section>`;
   } catch (e) { el.innerHTML = error(e); }
 }
@@ -4371,7 +4508,7 @@ const ICO = {
   amarilla: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#F5C400"/></svg>',
   roja: '<svg viewBox="0 0 24 24"><rect x="7" y="3.5" width="10" height="17" rx="2" fill="#FF3B3B"/></svg>',
   doble: '<svg viewBox="0 0 24 24"><rect x="4.5" y="3" width="9" height="15" rx="2" fill="#F5C400"/><rect x="10.5" y="6" width="9" height="15" rx="2" fill="#FF3B3B"/></svg>',
-  cambio: '<svg viewBox="0 0 24 24"><path d="M8 20V6m0 0l-3.5 3.5M8 6l3.5 3.5" stroke="#E6EBF2" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M16 4v14m0 0l-3.5-3.5M16 18l3.5-3.5" stroke="#7F8CA3" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg>',
+  cambio: '<svg viewBox="0 0 24 24"><path d="M8 20V6m0 0l-3.5 3.5M8 6l3.5 3.5" stroke="#22C55E" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M16 4v14m0 0l-3.5-3.5M16 18l3.5-3.5" stroke="#EF4444" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg>',
   lesion: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#C7D2E0" stroke-width="1.8"/><path d="M10.5 6.5h3v4h4v3h-4v4h-3v-4h-4v-3h4z" fill="#C7D2E0"/></svg>',
   palo: '<span class="mm2-palo"><svg viewBox="0 0 38 24"><g stroke="#55637A" stroke-width=".8"><path d="M4.5 10h19M4.5 14h19M4.5 18h19M8 6.5v14.5M12 6.5v14.5M16 6.5v14.5M20 6.5v14.5"/></g><path d="M2.5 22V5.2h22.6V22" fill="none" stroke="#F2F5F9" stroke-width="2.6" stroke-linejoin="round"/></svg><i>⚽</i></span>',
   errado: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="none" stroke="#C7D2E0" stroke-width="1.8"/><path d="M8 8l8 8M16 8l-8 8" stroke="#C7D2E0" stroke-width="2" stroke-linecap="round"/></svg>',
@@ -4389,7 +4526,9 @@ function describirEvento(e) {
   if (esCambio(t)) return { ic: ICO.cambio, tit: 'Cambio', entra: e.jugador, sale: e.sale };
   if (esLesion(t)) return { ic: ICO.lesion, tit: 'Lesión', nom: e.jugador };
   if (esPalo(t)) return { ic: ICO.palo, tit: 'Tiro al palo', nom: e.jugador };
-  return { ic: ICO.otro, tit: t, nom: e.jugador };
+  const OTROS = { 'Penalty Saved':'Penal atajado', 'Penalty saved':'Penal atajado', 'Offside':'Offside', 'Corner':'Córner', 'Foul':'Falta', 'Shot on target':'Remate al arco',
+    'Shot off target':'Remate afuera', 'Save':'Atajada', 'Free kick':'Tiro libre', 'Kick off':'Inicio', 'Half time':'Entretiempo', 'Full time':'Final', 'Injury time':'Tiempo agregado' };
+  return { ic: ICO.otro, tit: OTROS[t] || t, nom: e.jugador };
 }
 function panelMinuto(p) {
   const lista = (p.eventos || []).slice().sort((a, b) => minNum(a.minuto) - minNum(b.minuto));
@@ -4417,7 +4556,7 @@ function panelMinuto(p) {
 /* ---------- Fechas de un torneo: en orden de calendario y arrancando en la que se juega ahora ---------- */
 const FASES_ES = [[/round of 64|1\/32/i, '32avos de final'], [/round of 32|1\/16|last[ _]32/i, '16avos de final'], [/round of 16|1\/8|last[ _]16|octavos/i, 'Octavos de final'],
   [/quarter|cuartos/i, 'Cuartos de final'], [/semi/i, 'Semifinales'], [/3rd|third/i, 'Tercer puesto'], [/^final$|^finals?$|(^|[^-])\bfinal\b$/i, 'Final'],
-  [/league[ _]stage/i, 'Fase liga'], [/group[ _]stage/i, 'Fase de grupos'], [/play-?off/i, 'Repechaje'], [/regular[ _]season/i, 'Fase regular']];
+  [/league[ _]stage/i, 'Fase liga'], [/preliminary|qualif/i, 'Fase previa'], [/^1st round|first round/i, 'Primera ronda'], [/^2nd round|second round/i, 'Segunda ronda'], [/^3rd round|third round/i, 'Tercera ronda'], [/knockout/i, 'Eliminación directa'], [/group[ _]stage/i, 'Fase de grupos'], [/play-?off/i, 'Repechaje'], [/regular[ _]season/i, 'Fase regular']];
 function nombreFase(f) {
   const t = String(f || '').replaceAll('_', ' ').trim();
   const g = t.match(/^(?:group|grupo|zona)\s*([a-z0-9]{1,2})\b\s*-?\s*(\d+)?/i);
@@ -4601,8 +4740,8 @@ async function cargarMes(anio, mes, reintento = 0) {
     if (location.hash.startsWith('#/calendario') && cal.anio === anio && cal.mes === mes) { const y = window.scrollY; dibujarCalendario(); window.scrollTo(0, y); }
   }), 4000);
 }
-const ORDEN_LIGAS = ['LPF','LIB','SUD','CAR','CL','UEL','UECL','PL','PD','BL1','SA','FL1','PNA','BSA','PPL','DED','ELC','MLS','LMX',
-  'URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU','FAC','CDR','CIT','DFB','CDF','TDC','SCA','FEDA','PRC','PRD','WC','CAM','EURO'];
+const ORDEN_LIGAS = ['LPF','LIB','SUD','CL','PL','PD','UEL','SA','BL1','FL1','CAR','UECL','BSA','PNA','WC','CAM','EURO',
+  'PPL','DED','ELC','MLS','LMX','URU','CHI','COL','PAR','PER','ECU','BOL','VEN','SAU','FAC','CDR','CIT','DFB','CDF','TDC','SCA','FEDA','PRC','PRD'];
 function dibujarCalendario() {
   const km = cal.anio + '-' + cal.mes;
   if (!cal.meses[km]) {
@@ -4686,12 +4825,12 @@ async function vistaJugador(cod, id) {
       <div style="display:flex;align-items:center;gap:14px"><span class="esc-jug xl">${escudo(j.equipo, 'esc')}</span>
         <div style="display:flex;flex-direction:column;gap:6px"><b class="titulo" style="font-size:22px">${esc(j.nombre)}</b>
         <span style="font-weight:600">${esc(j.equipo.nombre)}</span></div></div>
-      <div class="datos3"><div><small>Nacionalidad</small><b>${esc(j.nacionalidad || '-')}</b></div><div><small>Edad</small><b>${edad(j.nacimiento)}</b></div><div><small>Posición</small><b>${esc(POS[j.posicion] || j.posicion || '-')}</b></div></div></section>
+      ${(() => { const dd = [['Nacionalidad', j.nacionalidad], ['Edad', j.nacimiento ? edad(j.nacimiento) : ''], ['Posición', POS[j.posicion] || posES(j.posicion)]].filter(x => x[1]);
+        return dd.length ? `<div class="datos3">${dd.map(([t, v]) => `<div><small>${t}</small><b>${esc(v)}</b></div>`).join('')}</div>` : ''; })()}</section>
     <main><section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">${esc(d.nombre)} · temporada actual</h2>
       <div class="datos3"><div><small>Goles</small><b>${j.goles}</b></div><div><small>Asistencias</small><b>${j.asistencias}</b></div><div><small>Partidos</small><b>${j.partidos}</b></div>
       <div><small>Penales</small><b>${j.penales}</b></div><div><small>Goles por partido</small><b>${gpp}</b></div><div><small>Ranking</small><b>${d.goleadores.indexOf(j) >= 0 ? (d.goleadores.indexOf(j) + 1) + "º" : "-"}</b></div></div></section>
-      <div id="extra" style="display:flex;flex-direction:column;gap:14px"><div class="cargando">Buscando foto y trayectoria…</div></div></main>`;
-  bloqueJugadorExtra(j.nombre, 'extra');
+</main>`;
 }
 /* ---------- Favoritos ---------- */
 let ligaFav = 'PD';
@@ -4762,7 +4901,7 @@ function dibujarClub(c) {
         ${c.proximos.length ? c.proximos.map(p => { const d = new Date(p.fecha + 'T12:00:00'); return `<div style="padding:8px 12px 0;font-size:11px;font-weight:700;color:var(--suave)">${DIAS[d.getDay()]} ${d.getDate()}/${d.getMonth()+1} · ${esc(p.ligaNombre)}</div>` + filaPartido(p); }).join('') : '<div class="aviso">No hay partidos programados.</div>'}</section>
       ${c.plantel.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Plantel actual</b><small>${c.plantelNota ? esc(c.plantelNota) + ' · ' : ''}${c.plantel.length} jugadores</small></div></div>
         ${orden.filter(g => grupos[g]).map(g => `<div style="padding:10px 12px 2px;font-size:11px;font-weight:800;letter-spacing:.6px;color:var(--suave)">${g.toUpperCase()}</div>` +
-          grupos[g].map(j => `<a class="jug" style="grid-template-columns:40px 1fr auto" href="#/ficha/${encodeURIComponent(j.nombre)}">${caraHTML(j)}<span><b style="font-size:14px">${esc(j.nombre)}</b><br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small></span><small style="color:var(--suave)">${edad(j.nacimiento)}</small></a>`).join('')).join('')}</section>` : ''}
+          grupos[g].map(j => `<div class="jug" style="grid-template-columns:40px 1fr auto">${caraHTML(j)}<span><b style="font-size:14px">${esc(j.nombre)}</b>${j.nacionalidad ? `<br><small style="color:var(--suave)">${esc(j.nacionalidad)}</small>` : ''}</span><small style="color:var(--suave)">${j.nacimiento ? edad(j.nacimiento) : ''}</small></div>`).join('')).join('')}</section>` : ''}
       ${c.descripcion ? `<section class="tarjeta pad"><h2 style="margin:0 0 8px;font-size:15px">Historia</h2><p style="margin:0;font-size:13px;line-height:1.55;color:#C7D2E0">${esc(c.descripcion)}…</p></section>` : ''}
       <p class="nota-pie">Datos de football-data.org y Highlightly. Clubes argentinos: datos revisados por Tiki Data.</p>
     </main>`;
@@ -4893,7 +5032,7 @@ async function bloqueJugadorExtra(nombre, destino) {
     if (!x.encontrado) { el.innerHTML = '<p class="nota-pie">No encontramos más información de este jugador.</p>'; return; }
     const fila = (t, v) => v ? `<div><small>${t}</small><b>${esc(v)}</b></div>` : '';
     el.innerHTML = `<section class="tarjeta pad"><h2 style="margin:0 0 12px;font-size:15px">Más datos</h2><div class="datos3">
-        ${fila('Altura', x.altura)}${fila('Número', x.numero)}${fila('Posición', x.posicion)}${fila('Club actual', x.equipo)}</div></section>
+        ${fila('Altura', x.altura)}${fila('Número', x.numero)}${fila('Posición', posES(x.posicion))}${fila('Club actual', x.equipo)}</div></section>
       ${x.anteriores.length ? `<section class="tarjeta"><div class="cab"><div class="t"><b>Clubes por los que pasó</b><small>Trayectoria</small></div></div>
         ${x.anteriores.map(f => `<div class="jug" style="grid-template-columns:32px 1fr auto">${f.escudo ? `<img src="${esc(f.escudo)}" alt="" style="width:28px;height:28px;object-fit:contain">` : '<span></span>'}<b style="font-size:14px">${esc(f.club)}</b><small style="color:var(--suave)">${esc(f.desde)}${f.hasta ? ' – ' + esc(f.hasta) : ''}${f.tipo === 'Loan' ? ' · préstamo' : ''}</small></div>`).join('')}</section>` : ''}
       <p class="nota-pie">Goles, partidos y asistencias de cada club anterior: no vienen en las fuentes gratuitas. Se pueden sumar con una API más completa.</p>`;
@@ -5177,7 +5316,7 @@ class Manejador(BaseHTTPRequestHandler):
     def json(self, funcion):
         inicio = time.time()
         try:
-            datos = json.dumps(funcion())
+            datos = json.dumps(en_castellano(funcion()))
             _medir(urlparse(self.path).path, time.time() - inicio)
             self.responder(200, "application/json", datos)
         except Exception as e:
